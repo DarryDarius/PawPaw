@@ -1,530 +1,497 @@
-# PawPaw MVP 代码开发清单
+# PawPaw Playdate MVP 开发计划
 
-本文基于 `mvp.md`，把产品范围拆成需要实际编写的代码、模块、接口、页面和任务顺序。
+本文是新的工程开发计划。当前方向从“宠物社交 + 内容流”调整为：
 
-## 1. 推荐代码仓库结构
+> 本地狗狗 playdate 匹配平台：宠物 profile、附近推荐、swipe match、简单聊天、playdate 发起、反馈闭环和安全风控。
 
-MVP 建议使用一个 monorepo，方便接口类型、文档、部署脚本和多端代码同步演进。
+## 1. 代码仓库结构
+
+继续使用 monorepo，但开发重心调整：
 
 ```text
 PawPaw/
   apps/
     api/                    # Go 模块化单体服务
-    mobile/                 # Flutter iOS/Android App
-    web/                    # Next.js 公开页 + 商家后台 + 运营后台
+    mobile/                 # Flutter App，后续完整移动端
+    web/                    # Web Demo / Next.js 公开页和后台
   packages/
-    api-contracts/          # OpenAPI、接口类型、错误码、枚举
-    design-tokens/          # 颜色、字号、间距、图标命名
+    api-contracts/          # OpenAPI、枚举、错误码
+    matching-core/          # 推荐打分、兼容度规则，可被 API 和测试复用
   infra/
-    docker/                 # 本地开发 Docker Compose
-    migrations/             # 数据库迁移
-    scripts/                # 初始化、种子数据、部署脚本
+    migrations/             # PostgreSQL 迁移
+    docker/                 # 本地 PostgreSQL / Redis
+    scripts/                # 种子数据、部署脚本
   docs/
     mvp.md
     code.md
-    api.md
-    schema.md
 ```
 
-如果前期人少，可以先不拆 `packages/`，但至少要保留 `apps/api`、`apps/mobile`、`apps/web` 三块。
+当前静态 Demo 可以继续保留在 `apps/web`，后续逐步接真实 API。
 
-## 2. 后端需要写的代码
+## 2. 后端模块
 
-### 2.1 后端基础工程
+### 2.1 基础模块
 
-| 模块 | 需要写的代码 | 说明 |
+| 模块 | 目录建议 | 说明 |
 | --- | --- | --- |
-| 启动入口 | `cmd/api/main.go` | 读取配置、连接数据库、注册路由、启动 HTTP 服务 |
-| 配置 | `internal/config` | 环境变量、短信、对象存储、Redis、审核服务配置 |
-| 数据库 | `internal/db` | PostgreSQL 连接、事务封装、分页工具 |
-| Redis | `internal/cache` | 验证码、计数器、限流、热点缓存 |
-| 路由 | `internal/http` | 中间件、错误处理、鉴权、请求日志 |
-| 鉴权 | `internal/auth` | 手机号验证码登录、JWT/session、游客态 |
-| 权限 | `internal/permission` | 用户、商家、运营后台角色权限 |
-| 文件存储 | `internal/storage` | 图片上传签名、对象存储回调、公开 URL |
-| 异步事件 | `internal/event` | 发布内容、审核、通知、埋点等事件 |
-| 定时任务 | `internal/job` | 提醒触达、线索超时、数据统计 |
-| 观测 | `internal/observability` | 日志、metrics、trace、错误上报 |
+| 启动入口 | `cmd/api/main.go` | HTTP 服务、配置、依赖注入 |
+| 配置 | `internal/config` | 数据库、Redis、对象存储、Push、风控配置 |
+| 数据库 | `internal/db` | PostgreSQL、事务、分页、迁移 |
+| 缓存 | `internal/cache` | Redis、profile 缓存、推荐缓存、swipe 状态 |
+| 鉴权 | `internal/auth` | 邮箱/手机号登录、session/JWT |
+| 权限 | `internal/permission` | 用户、运营、后台角色 |
+| 事件 | `internal/event` | SwipeCreated、MatchCreated、PlaydateCreated |
+| Job | `internal/job` | 推荐预计算、通知、playdate 提醒、数据聚合 |
+| 观测 | `internal/observability` | 日志、指标、错误上报 |
 
 ### 2.2 业务模块
 
 | 模块 | 目录建议 | 主要职责 |
 | --- | --- | --- |
-| 用户 | `internal/user` | 用户资料、城市、兴趣、注销、账号状态 |
-| 宠物 | `internal/pet` | 宠物档案、主人关系、宠物主页、可见性 |
-| 内容 | `internal/content` | 帖子、媒体、话题、帖子详情、删除 |
-| Feed | `internal/feed` | 推荐流、最新流、关注流、城市流 |
-| 社交互动 | `internal/social` | 点赞、收藏、评论、关注 |
-| 消息通知 | `internal/notification` | 站内通知、Push 任务、通知已读 |
-| 附近 | `internal/nearby` | 城市/行政区内容、附近宠物、地点 |
-| 问答 | `internal/qa` | 提问、回答、收藏、风险提示 |
-| 健康 | `internal/health` | 体重、疫苗、驱虫、绝育、喂养提醒 |
-| 服务 | `internal/service` | 商家、服务项目、筛选、线索 |
-| 审核 | `internal/moderation` | 内容审核、举报、封禁、申诉 |
-| 运营后台 | `internal/admin` | 审核队列、用户管理、商家管理、数据看板 |
-| 商家后台 | `internal/merchant` | 商家资料、服务管理、线索处理 |
-| 埋点 | `internal/analytics` | 行为事件接收、漏斗统计基础表 |
+| 用户 | `internal/user` | 主人档案、隐私、安全偏好 |
+| 宠物 | `internal/pet` | 狗狗档案、体型、性格、疫苗、活动偏好 |
+| 地点 | `internal/location` | dog park、公开地点、neighborhood/geohash |
+| 推荐 | `internal/recommendation` | 候选召回、加权排序、曝光日志 |
+| Swipe | `internal/swipe` | 左滑/右滑、幂等、已滑过滤 |
+| Match | `internal/match` | 双向喜欢、match 唯一约束、match 列表 |
+| 聊天 | `internal/chat` | conversation、message、未读数 |
+| Playdate | `internal/playdate` | 创建、邀请、确认、取消、到场、完成 |
+| 反馈 | `internal/feedback` | 评分、repeat intent、安全反馈 |
+| 安全 | `internal/safety` | 举报、拉黑、取消 match、封禁 |
+| 通知 | `internal/notification` | match、聊天、playdate 提醒 |
+| 后台 | `internal/admin` | 用户、宠物、举报、playdate、地点管理 |
+| 埋点 | `internal/analytics` | impression、swipe、match、chat、playdate、feedback |
+| 服务目录 | `internal/service` | P1：grooming、vet、training 线索 |
 
-### 2.3 数据库迁移
+## 3. 数据库迁移计划
 
-首批迁移建议按依赖顺序写：
+首批迁移顺序：
 
 ```text
 001_create_users.sql
-002_create_pets.sql
-003_create_posts.sql
-004_create_social_tables.sql
-005_create_notifications.sql
-006_create_health_records.sql
-007_create_nearby_places.sql
-008_create_qa.sql
-009_create_service_providers.sql
-010_create_reports_and_moderation.sql
-011_create_analytics_events.sql
-012_create_admin_roles.sql
+002_create_pets_and_profiles.sql
+003_create_locations.sql
+004_create_swipes.sql
+005_create_matches.sql
+006_create_conversations.sql
+007_create_playdates.sql
+008_create_feedback.sql
+009_create_safety.sql
+010_create_recommendation_logs.sql
+011_create_notifications.sql
+012_create_admin_audit_logs.sql
 ```
 
-### 2.4 核心数据表
+## 4. 核心数据表
 
-必须先写：
+### 4.1 用户与宠物
 
-| 表 | 用途 |
+| 表 | 关键字段 |
 | --- | --- |
-| `users` | 用户账号和基础资料 |
-| `user_sessions` | 登录态和刷新令牌 |
-| `pets` | 宠物一级实体 |
-| `owner_pets` | 用户和宠物的拥有/共养关系 |
-| `posts` | 图文、问题等内容主体 |
-| `post_pets` | 内容关联宠物 |
-| `media_assets` | 图片/视频文件 |
-| `comments` | 评论 |
-| `reactions` | 点赞等反应 |
-| `collections` | 收藏 |
-| `follow_edges` | 关注用户/宠物 |
-| `notifications` | 站内通知 |
-| `health_records` | 体重、疫苗、驱虫、绝育等记录 |
-| `reminders` | 喂养、疫苗、驱虫等提醒 |
-| `qa_questions` | 问答问题 |
-| `qa_answers` | 问答回答 |
-| `nearby_places` | 宠物友好地点 |
-| `service_providers` | 商家主体 |
-| `service_listings` | 服务项目 |
-| `leads` | 用户提交的咨询/预约意向 |
-| `reports` | 举报 |
-| `moderation_tasks` | 审核任务 |
-| `audit_logs` | 运营、商家、用户关键操作审计 |
-| `analytics_events` | 埋点事件 |
+| `users` | id、email_hash、phone_hash、nickname、avatar_url、neighborhood、privacy_level、risk_state |
+| `owner_profiles` | user_id、available_windows、meetup_preferences、max_distance_km、safety_preferences |
+| `pets` | id、owner_user_id、name、species、breed、birth_date、sex、avatar_url |
+| `pet_profiles` | pet_id、size、neutered、vaccine_status、personality_tags、activity_preferences、energy_level |
+| `locations` | id、name、type、city、neighborhood、geohash、is_public_place、safety_notes |
 
-## 3. REST API 需要写的接口
+### 4.2 匹配闭环
 
-### 3.1 认证与用户
+| 表 | 关键字段 |
+| --- | --- |
+| `swipes` | id、user_id、pet_id、target_user_id、target_pet_id、action、idempotency_key、created_at |
+| `matches` | id、user_low_id、user_high_id、pet_low_id、pet_high_id、status、created_at |
+| `conversations` | id、match_id、status、last_message_at |
+| `messages` | id、conversation_id、sender_user_id、body、seq、created_at |
+| `playdates` | id、creator_user_id、location_id、start_at、visibility、vaccine_required、status |
+| `playdate_participants` | playdate_id、user_id、pet_id、status、checked_in_at |
+| `feedback` | id、playdate_id、from_user_id、to_user_id、rating、repeat_intent、safety_flag |
+
+### 4.3 安全与推荐
+
+| 表 | 关键字段 |
+| --- | --- |
+| `reports` | id、reporter_user_id、target_type、target_id、reason、status |
+| `blocks` | blocker_user_id、blocked_user_id、reason、created_at |
+| `recommendation_logs` | user_id、candidate_pet_id、rank_position、features_snapshot、shown_at、action、matched、chat_started、playdate_created、feedback_score |
+| `notifications` | id、user_id、type、payload_json、read_at、created_at |
+| `audit_logs` | actor_id、action、target_type、target_id、metadata_json、created_at |
+
+关键约束：
+
+```sql
+unique (user_id, target_pet_id) on swipes;
+unique (idempotency_key) on swipes;
+unique (user_low_id, user_high_id, pet_low_id, pet_high_id) on matches;
+unique (blocker_user_id, blocked_user_id) on blocks;
+```
+
+## 5. REST API 计划
+
+### 5.1 Auth / Me
 
 ```text
-POST   /api/v1/auth/sms/send
-POST   /api/v1/auth/sms/login
+POST   /api/v1/auth/login
 POST   /api/v1/auth/logout
 POST   /api/v1/auth/refresh
-
 GET    /api/v1/me
 PATCH  /api/v1/me
-DELETE /api/v1/me
-POST   /api/v1/me/interests
+PATCH  /api/v1/me/privacy
+PATCH  /api/v1/me/availability
 ```
 
-### 3.2 宠物档案
+### 5.2 宠物 Profile
 
 ```text
 POST   /api/v1/pets
+GET    /api/v1/me/pets
 GET    /api/v1/pets/:pet_id
 PATCH  /api/v1/pets/:pet_id
-DELETE /api/v1/pets/:pet_id
-GET    /api/v1/me/pets
+PATCH  /api/v1/pets/:pet_id/profile
 POST   /api/v1/pets/:pet_id/avatar/upload-token
-GET    /api/v1/pets/:pet_id/timeline
 ```
 
-### 3.3 内容与 Feed
+### 5.3 地点
 
 ```text
-GET    /api/v1/feed/recommend
-GET    /api/v1/feed/latest
-GET    /api/v1/feed/following
-GET    /api/v1/feed/city
-
-POST   /api/v1/posts
-GET    /api/v1/posts/:post_id
-PATCH  /api/v1/posts/:post_id
-DELETE /api/v1/posts/:post_id
-POST   /api/v1/media/upload-token
-GET    /api/v1/topics
+GET    /api/v1/locations
+GET    /api/v1/locations/:location_id
+POST   /api/v1/admin/locations
+PATCH  /api/v1/admin/locations/:location_id
 ```
 
-### 3.4 互动
+### 5.4 推荐与 Swipe
 
 ```text
-POST   /api/v1/posts/:post_id/reactions
-DELETE /api/v1/posts/:post_id/reactions
-POST   /api/v1/posts/:post_id/collections
-DELETE /api/v1/posts/:post_id/collections
-
-GET    /api/v1/posts/:post_id/comments
-POST   /api/v1/posts/:post_id/comments
-DELETE /api/v1/comments/:comment_id
-
-POST   /api/v1/follows
-DELETE /api/v1/follows
-GET    /api/v1/me/following
-GET    /api/v1/me/followers
+GET    /api/v1/recommendations/feed
+POST   /api/v1/recommendations/:candidate_pet_id/impression
+POST   /api/v1/swipes
+GET    /api/v1/swipes/me
 ```
 
-### 3.5 通知
+`POST /api/v1/swipes` 请求体：
+
+```json
+{
+  "pet_id": "my_pet_id",
+  "target_pet_id": "candidate_pet_id",
+  "action": "like",
+  "idempotency_key": "user-target-action-clientNonce"
+}
+```
+
+响应：
+
+```json
+{
+  "matched": true,
+  "match_id": "match_id",
+  "conversation_id": "conversation_id"
+}
+```
+
+### 5.5 Match / Chat
 
 ```text
-GET    /api/v1/notifications
-POST   /api/v1/notifications/:notification_id/read
-POST   /api/v1/notifications/read-all
-POST   /api/v1/device-tokens
-DELETE /api/v1/device-tokens/:token_id
+GET    /api/v1/matches
+GET    /api/v1/matches/:match_id
+POST   /api/v1/matches/:match_id/unmatch
+
+GET    /api/v1/conversations/:conversation_id/messages
+POST   /api/v1/conversations/:conversation_id/messages
+POST   /api/v1/conversations/:conversation_id/read
 ```
 
-### 3.6 附近
+MVP 先用 REST 轮询；后续再加 WebSocket。
+
+### 5.6 Playdate
 
 ```text
-GET    /api/v1/nearby/cities/:city_code/feed
-GET    /api/v1/nearby/cities/:city_code/pets
-GET    /api/v1/nearby/cities/:city_code/places
-GET    /api/v1/nearby/places/:place_id
+POST   /api/v1/playdates
+GET    /api/v1/playdates
+GET    /api/v1/playdates/:playdate_id
+POST   /api/v1/playdates/:playdate_id/invite
+POST   /api/v1/playdates/:playdate_id/respond
+POST   /api/v1/playdates/:playdate_id/cancel
+POST   /api/v1/playdates/:playdate_id/check-in
+POST   /api/v1/playdates/:playdate_id/feedback
 ```
 
-首版接口只接受城市和行政区参数，不返回精确坐标。
-
-### 3.7 问答
-
-```text
-POST   /api/v1/questions
-GET    /api/v1/questions
-GET    /api/v1/questions/:question_id
-POST   /api/v1/questions/:question_id/answers
-PATCH  /api/v1/answers/:answer_id
-DELETE /api/v1/answers/:answer_id
-POST   /api/v1/questions/:question_id/collections
-```
-
-### 3.8 健康记录与提醒
-
-```text
-POST   /api/v1/pets/:pet_id/health-records
-GET    /api/v1/pets/:pet_id/health-records
-PATCH  /api/v1/health-records/:record_id
-DELETE /api/v1/health-records/:record_id
-
-POST   /api/v1/pets/:pet_id/reminders
-GET    /api/v1/pets/:pet_id/reminders
-PATCH  /api/v1/reminders/:reminder_id
-DELETE /api/v1/reminders/:reminder_id
-POST   /api/v1/reminders/:reminder_id/complete
-```
-
-### 3.9 服务目录与线索
-
-```text
-GET    /api/v1/service-categories
-GET    /api/v1/service-listings
-GET    /api/v1/service-listings/:listing_id
-POST   /api/v1/service-listings/:listing_id/leads
-GET    /api/v1/me/leads
-```
-
-### 3.10 举报与审核
+### 5.7 安全
 
 ```text
 POST   /api/v1/reports
-GET    /api/v1/reports/reasons
+POST   /api/v1/blocks
+DELETE /api/v1/blocks/:blocked_user_id
+GET    /api/v1/blocks
 ```
 
-运营后台接口：
+### 5.8 后台与数据
 
 ```text
-GET    /api/v1/admin/moderation/tasks
-POST   /api/v1/admin/moderation/tasks/:task_id/approve
-POST   /api/v1/admin/moderation/tasks/:task_id/reject
-POST   /api/v1/admin/users/:user_id/ban
-POST   /api/v1/admin/users/:user_id/unban
-GET    /api/v1/admin/service-providers
-PATCH  /api/v1/admin/service-providers/:provider_id/verify
 GET    /api/v1/admin/dashboard
-```
+GET    /api/v1/admin/users
+GET    /api/v1/admin/pets
+GET    /api/v1/admin/matches
+GET    /api/v1/admin/playdates
+GET    /api/v1/admin/reports
+POST   /api/v1/admin/reports/:report_id/resolve
+POST   /api/v1/admin/users/:user_id/ban
 
-商家后台接口：
-
-```text
-GET    /api/v1/merchant/profile
-PATCH  /api/v1/merchant/profile
-POST   /api/v1/merchant/listings
-PATCH  /api/v1/merchant/listings/:listing_id
-GET    /api/v1/merchant/leads
-PATCH  /api/v1/merchant/leads/:lead_id
-```
-
-### 3.11 埋点
-
-```text
 POST   /api/v1/events
-GET    /api/v1/admin/analytics/funnels
-GET    /api/v1/admin/analytics/retention
+GET    /api/v1/admin/analytics/recommendation-funnel
+GET    /api/v1/admin/analytics/playdate-funnel
 ```
 
-## 4. Flutter App 需要写的代码
+## 6. 推荐系统实现计划
 
-### 4.1 App 基础
+### 6.1 MVP 推荐流程
 
-| 模块 | 需要写的代码 |
+```text
+用户请求推荐 feed
+  -> 读取当前用户和狗狗 profile
+  -> geohash/neighborhood 召回候选
+  -> 过滤已滑、拉黑、举报风险、不可见档案
+  -> 计算兼容度特征
+  -> 加权排序
+  -> 写 recommendation_logs impression
+  -> 返回卡片和 reason_codes
+```
+
+### 6.2 加权排序
+
+```text
+score = 0.25 * location_score
+      + 0.20 * personality_score
+      + 0.15 * size_compatibility
+      + 0.15 * schedule_overlap
+      + 0.10 * activity_preference
+      + 0.10 * historical_match_rate
+      + 0.05 * freshness
+```
+
+### 6.3 推荐代码拆分
+
+| 文件/包 | 责任 |
 | --- | --- |
-| 启动 | splash、环境配置、版本检测 |
-| 路由 | 底部 Tab、登录拦截、深链 |
-| 网络 | API client、token 刷新、错误处理、重试 |
-| 状态管理 | 用户态、城市、宠物档案、通知红点 |
-| 本地存储 | token、草稿、用户偏好 |
-| 上传 | 图片选择、压缩、上传进度、失败重试 |
-| 权限 | 相册、相机、通知、位置权限按场景申请 |
-| 埋点 | 页面曝光、点击、提交、留存事件 |
+| `internal/recommendation/retriever.go` | 地理和基础规则召回 |
+| `internal/recommendation/filter.go` | 已滑、拉黑、风险、隐私过滤 |
+| `internal/recommendation/features.go` | 距离、体型、性格、时间重合特征 |
+| `internal/recommendation/scorer.go` | 加权排序 |
+| `internal/recommendation/exploration.go` | 新用户、新宠物、多样性曝光 |
+| `internal/recommendation/logger.go` | 曝光和行为日志 |
 
-### 4.2 App 页面
+## 7. 缓存设计
+
+| 缓存 | Key | 用途 |
+| --- | --- | --- |
+| 用户 profile | `user_profile:{userId}` | 推荐、隐私、安全设置 |
+| 宠物 profile | `pet_profile:{petId}` | 卡片展示和打分 |
+| 推荐候选 | `recommend_candidates:{userId}:{geoHash}:{version}` | 降低召回成本 |
+| 推荐结果 | `recommend_feed:{userId}:{date}:{modelVersion}` | 短时间稳定 feed |
+| 已滑集合 | `swiped:{userId}` | 快速过滤 |
+| 喜欢集合 | `liked_by:{targetPetId}` | 快速判断 mutual like |
+| 未读数 | `unread:{userId}` | 消息红点 |
+
+所有核心状态必须落 PostgreSQL，Redis 只做加速。
+
+## 8. 最终一致性与事件
+
+### 8.1 Swipe 到 Match
+
+同步：
+
+1. 校验用户、宠物、target 是否可见。
+2. 用 `idempotency_key` 写 `swipes`。
+3. 返回 swipe 接收成功。
+
+异步：
+
+1. 发布 `SwipeCreatedEvent`。
+2. Worker 查询对方是否已 like。
+3. 归一化 user/pet id。
+4. 插入 `matches`，依赖唯一约束防重复。
+5. 发布 `MatchCreatedEvent`。
+6. 创建 conversation。
+7. 写通知。
+
+### 8.2 事件列表
+
+| 事件 | 消费者 |
+| --- | --- |
+| `SwipeCreatedEvent` | match worker、analytics |
+| `MatchCreatedEvent` | chat worker、notification、analytics |
+| `MessageCreatedEvent` | unread counter、notification、moderation |
+| `PlaydateCreatedEvent` | notification、reminder job、analytics |
+| `PlaydateFeedbackSubmittedEvent` | recommendation log updater、safety |
+| `ReportCreatedEvent` | admin queue、risk scorer |
+
+## 9. App 页面计划
+
+### 9.1 移动端页面
 
 | 页面 | 路由建议 | 说明 |
 | --- | --- | --- |
-| 游客首页 | `/home` | 可浏览内容，关键行为触发登录 |
-| 登录 | `/auth/login` | 手机验证码登录 |
-| 新手引导 | `/onboarding` | 主人档案、宠物档案、城市、兴趣 |
-| 首页 | `/tabs/home` | 推荐、关注、最新、城市 |
-| 附近 | `/tabs/nearby` | 城市宠友、地点、服务入口 |
-| 发布选择 | `/compose` | 发图文、提问、记一笔 |
-| 图文发布 | `/compose/post` | 文本、图片、宠物、话题 |
-| 提问 | `/compose/question` | 问题、分类、风险提示 |
-| 健康记录 | `/compose/health-record` | 体重、疫苗、驱虫、绝育 |
-| 消息 | `/tabs/notifications` | 评论、点赞、关注、系统通知 |
-| 我的 | `/tabs/me` | 主人资料、宠物、收藏、设置 |
-| 宠物主页 | `/pets/:id` | 档案、动态、健康入口 |
-| 帖子详情 | `/posts/:id` | 评论、互动、举报 |
-| 问答详情 | `/questions/:id` | 回答、收藏、提示 |
-| 健康中心 | `/pets/:id/health` | 记录列表、提醒列表 |
-| 服务列表 | `/services` | 分类、城市、筛选 |
-| 服务详情 | `/services/:id` | 商家资料、提交线索 |
-| 设置 | `/settings` | 隐私、通知、注销、协议 |
+| 登录 | `/auth/login` | 邮箱/手机号登录 |
+| Onboarding | `/onboarding` | 主人 + 狗狗 profile |
+| 推荐卡片 | `/tabs/recommend` | swipe 主界面 |
+| 推荐筛选 | `/recommend/filters` | 距离、体型、时间、疫苗 |
+| Match 列表 | `/tabs/matches` | 双向匹配 |
+| 聊天 | `/conversations/:id` | match 后聊天 |
+| 创建 Playdate | `/playdates/new` | 时间、地点、宠物、备注 |
+| Playdate 列表 | `/tabs/playdates` | 待确认、已确认、历史 |
+| Playdate 反馈 | `/playdates/:id/feedback` | 评分和安全反馈 |
+| 地点 | `/tabs/places` | dog park / pet-friendly place |
+| 我的 | `/tabs/me` | 主人、宠物、安全、黑名单 |
 
-### 4.3 App 组件
-
-| 组件 | 用途 |
-| --- | --- |
-| `PostCard` | 内容流卡片 |
-| `PetAvatar` | 宠物头像和基础信息 |
-| `PetProfileHeader` | 宠物主页头部 |
-| `MediaGrid` | 九宫格图片 |
-| `ComposeToolbar` | 发布器工具栏 |
-| `CommentList` | 评论列表 |
-| `HealthRecordItem` | 健康记录项 |
-| `ReminderItem` | 提醒项 |
-| `ServiceListingCard` | 服务商家卡片 |
-| `ReportSheet` | 举报弹窗 |
-| `LoginRequiredSheet` | 游客行为登录引导 |
-| `PermissionPrompt` | 权限解释弹窗 |
-
-## 5. Next.js Web 需要写的代码
-
-### 5.1 公开页
+### 9.2 Web 页面
 
 | 页面 | 路由建议 | 说明 |
 | --- | --- | --- |
-| 帖子详情 | `/p/[postId]` | SEO、分享、打开 App |
-| 宠物分享卡 | `/pet/[petId]` | 宠物资料、精选动态 |
-| 问答详情 | `/q/[questionId]` | 长尾搜索、风险提示 |
-| 走失卡占位 | `/lost/[lostId]` | MVP 可先做占位和分享结构 |
-| 城市页 | `/city/[cityCode]` | 城市内容、地点、服务 |
+| Demo 首页 | `/` | 展示主链路 |
+| 宠物卡 | `/pet/[petId]` | 公开分享 |
+| 地点页 | `/places/[placeId]` | dog park SEO |
+| 后台 Dashboard | `/admin/dashboard` | 漏斗和风险概览 |
+| 用户管理 | `/admin/users` | 风控和封禁 |
+| 宠物管理 | `/admin/pets` | profile 审核 |
+| Playdate 管理 | `/admin/playdates` | 活动状态 |
+| 举报处理 | `/admin/reports` | 举报和拉黑 |
 
-### 5.2 商家后台
+## 10. Web Demo 迭代计划
 
-| 页面 | 路由建议 |
-| --- | --- |
-| 商家登录 | `/merchant/login` |
-| 商家资料 | `/merchant/profile` |
-| 服务管理 | `/merchant/listings` |
-| 线索列表 | `/merchant/leads` |
-| 线索详情 | `/merchant/leads/[leadId]` |
+当前 `apps/web` 是静态 Demo。下一版 Demo 需要从“宠物社区展示”调整成“playdate 匹配展示”：
 
-### 5.3 运营后台
+1. 首页 hero 改成 playdate matching 定位。
+2. 增加 swipe 卡片区：左滑/右滑按钮、兼容度分数、推荐理由。
+3. 增加 match 列表和简单聊天模拟。
+4. 增加创建 playdate 表单。
+5. 增加活动反馈和安全举报。
+6. 后台统计改成 recommendation funnel 和 playdate funnel。
 
-| 页面 | 路由建议 |
-| --- | --- |
-| 运营登录 | `/admin/login` |
-| 数据看板 | `/admin/dashboard` |
-| 审核队列 | `/admin/moderation` |
-| 举报处理 | `/admin/reports` |
-| 用户管理 | `/admin/users` |
-| 商家审核 | `/admin/service-providers` |
-| 地点管理 | `/admin/places` |
-| 线索查看 | `/admin/leads` |
-
-### 5.4 Web 共享代码
-
-| 模块 | 说明 |
-| --- | --- |
-| `lib/api-client` | 调后端接口 |
-| `lib/auth` | 后台登录态 |
-| `components/admin-table` | 后台列表、筛选、分页 |
-| `components/moderation-card` | 审核卡片 |
-| `components/public-post` | 公开帖子展示 |
-| `components/open-app-banner` | 打开 App 引导 |
-
-## 6. 异步任务和后台 Job
-
-| Job | 触发 | 要写的代码 |
-| --- | --- | --- |
-| 内容审核任务 | 用户发布内容后 | 创建审核任务、调用云审核、更新状态 |
-| 媒体处理 | 图片上传完成后 | 去 EXIF、生成缩略图、记录宽高 |
-| 通知分发 | 评论、点赞、关注、提醒 | 写站内信、发送 Push |
-| 提醒扫描 | 定时任务 | 找到到期提醒，生成通知 |
-| Feed 计数更新 | 互动事件 | 更新点赞数、评论数、收藏数 |
-| 搜索索引 | 内容审核通过后 | 写入 PostgreSQL FTS 字段 |
-| 线索超时 | 商家未响应 | 标记超时、通知运营 |
-| 数据看板聚合 | 每小时/每天 | 汇总注册、建档、发布、线索、留存 |
-
-## 7. 第三方能力接入
-
-| 能力 | MVP 接入点 |
-| --- | --- |
-| 短信 | 验证码登录 |
-| 对象存储 | 图片上传、头像上传 |
-| CDN | 公开图片访问 |
-| 内容审核 | 图片、文本、评论、问答 |
-| Push | 评论、点赞、关注、提醒 |
-| 地图/行政区 | 城市和行政区选择，首版不做精确地图社交 |
-| 错误监控 | App、Web、API 异常 |
-| 数据分析 | 埋点和漏斗 |
-
-## 8. 测试需要写的代码
+## 11. 测试计划
 
 ### 后端测试
 
 | 测试 | 范围 |
 | --- | --- |
-| 单元测试 | 手机号登录、权限判断、宠物归属、内容状态流转 |
-| 接口测试 | 注册、建档、发布、互动、提醒、线索、举报 |
-| 数据库测试 | 迁移、索引、唯一约束、软删除 |
-| 审核测试 | 发布后待审、通过可见、拒绝不可见 |
-| 权限测试 | 用户只能改自己的宠物，商家只能看自己的线索 |
+| 推荐单元测试 | 体型兼容、性格兼容、时间重合、score 排序 |
+| Swipe 幂等 | 重复请求不会重复写入 |
+| Match 唯一性 | A/B 同时右滑只生成一个 match |
+| 权限测试 | 未 match 不能聊天，不能操作别人的 playdate |
+| 安全测试 | block 后互相不可见，report 进入后台 |
+| Playdate 状态机 | pending、confirmed、cancelled、completed |
 
-### App 测试
-
-| 测试 | 范围 |
-| --- | --- |
-| Widget 测试 | 主要卡片、表单、空状态、错误状态 |
-| 集成测试 | 登录建档、发帖、评论、创建提醒、提交线索 |
-| 权限测试 | 相册、相机、通知、位置拒绝后的体验 |
-
-### Web 测试
+### App / Web 测试
 
 | 测试 | 范围 |
 | --- | --- |
-| 公开页渲染 | 帖子、宠物、问答、城市页 SSR |
-| 后台权限 | 未登录跳转、商家和运营权限隔离 |
-| 审核流程 | 审核通过/拒绝/封禁 |
+| Onboarding | 必填字段、空状态、隐私提示 |
+| Swipe | 左滑、右滑、match 弹窗、无候选状态 |
+| Chat | 发送消息、未读、举报入口 |
+| Playdate | 创建、确认、取消、反馈 |
+| 后台 | 举报处理、用户封禁、数据看板 |
 
-## 9. 开发顺序
+## 12. 开发顺序
 
 ### Sprint 0：工程地基
 
-1. 建 monorepo。
-2. 建 Go API、Flutter、Next.js 三个项目。
-3. 写 Docker Compose：PostgreSQL、Redis、对象存储模拟服务。
-4. 写用户、宠物、内容核心表迁移。
-5. 写 OpenAPI 初稿。
-6. 打通登录、鉴权、上传签名、健康检查。
+1. 保留现有 monorepo。
+2. 补 Docker Compose：PostgreSQL、Redis。
+3. 建数据库迁移框架。
+4. 定义 OpenAPI 和错误码。
+5. 打通登录、鉴权、健康检查。
+6. 准备 50-100 条狗狗 profile 种子数据。
 
-### Sprint 1：双档案和首页骨架
+### Sprint 1：Profile 和地点
 
-1. 手机号验证码登录。
-2. 主人档案 CRUD。
-3. 宠物档案 CRUD。
-4. App 新手引导。
-5. App 首页 Tab 和我的页。
-6. Web 公开页基础布局。
+1. 主人档案 CRUD。
+2. 狗狗档案 CRUD。
+3. dog personality / size / vaccine / schedule 字段。
+4. 地点表和公开地点管理。
+5. Onboarding 页面。
+6. Web Demo 更新为 playdate 定位。
 
-### Sprint 2：内容发布和互动
+### Sprint 2：推荐和 Swipe
 
-1. 图片上传和媒体表。
-2. 图文发布、关联宠物、话题。
-3. 最新流、城市流、关注流。
-4. 帖子详情。
-5. 点赞、收藏、评论、关注。
-6. 互动通知。
-7. 基础审核状态。
+1. 推荐候选召回。
+2. 兼容度特征和加权排序。
+3. 推荐卡片 API。
+4. Swipe API 和幂等。
+5. 已滑过滤。
+6. recommendation_logs 曝光和行为记录。
 
-### Sprint 3：附近、问答、健康
+### Sprint 3：Match 和 Chat
 
-1. 附近城市页、附近宠物、地点列表。
-2. 问答发布、回答、收藏。
-3. 健康记录。
-4. 提醒创建、提醒扫描、Push/站内通知。
-5. 医疗风险提示和举报入口。
+1. 双向喜欢生成 match。
+2. 唯一约束防重复。
+3. Match 列表。
+4. Conversation 和 Message。
+5. 未读数和通知。
+6. 取消 match。
 
-### Sprint 4：服务线索和后台
+### Sprint 4：Playdate 和反馈
 
-1. 商家、服务项目、服务列表。
-2. 用户提交线索。
-3. 商家后台查看和处理线索。
-4. 运营后台审核内容、处理举报、管理商家。
-5. 数据看板基础指标。
+1. 创建 playdate。
+2. 邀请、确认、取消。
+3. 公开地点选择。
+4. 到场确认。
+5. 活动后反馈。
+6. playdate funnel 数据。
 
-### Sprint 5：灰度上线
+### Sprint 5：安全和灰度
 
-1. 核心埋点。
-2. 错误监控。
-3. 隐私、协议、注销、删除。
-4. App 打包和测试分发。
-5. 种子数据导入。
-6. 性能、权限、安全回归。
+1. 举报、拉黑、封禁。
+2. 后台处理队列。
+3. 风险用户标记。
+4. 隐私和位置模糊化检查。
+5. 小区域灰度。
+6. 性能和缓存回归。
 
-## 10. P0 代码验收标准
+## 13. P0 验收标准
 
 | 验收项 | 对应代码 |
 | --- | --- |
-| 用户能登录和注销 | Auth API、App 登录页、设置页 |
-| 用户能创建主人和宠物档案 | User/Pet API、App 引导、我的页 |
-| 用户能发布图文并关联宠物 | Content API、上传、发布页 |
-| 用户能浏览首页、城市流和附近页 | Feed API、Nearby API、App Tab |
-| 用户能互动并收到通知 | Social API、Notification API、App 消息页 |
-| 用户能记录健康和设置提醒 | Health API、Reminder Job、App 健康中心 |
-| 用户能提问和回答 | QA API、App 问答页 |
-| 用户能浏览服务并提交线索 | Service API、Lead API、App 服务页 |
-| 运营能审核和处理举报 | Admin API、Web 运营后台 |
-| 商家能处理线索 | Merchant API、Web 商家后台 |
-| Web 公开页可分享 | Next.js 公开路由 |
-| 关键行为可统计 | Analytics API、事件埋点 |
+| 用户能创建主人和狗狗 profile | User/Pet API、Onboarding |
+| 推荐 feed 能返回候选狗狗 | Recommendation API、scorer |
+| 推荐卡片展示兼容度和理由 | App/Web card component |
+| 用户能左滑/右滑 | Swipe API、client state |
+| 重复滑动被去重 | swipes unique + idempotency |
+| 双向喜欢生成 match | Match worker + unique constraint |
+| Match 后能聊天 | Conversation / Message API |
+| 用户能创建 playdate | Playdate API、location selector |
+| 用户能确认/取消 playdate | Playdate state machine |
+| 用户能提交反馈 | Feedback API |
+| 用户能举报/拉黑 | Safety API |
+| 后台能处理举报 | Admin reports |
+| 埋点能覆盖完整漏斗 | Analytics events |
 
-## 11. 暂时不要写的代码
+## 14. 暂时不要写
 
-为了控制 MVP 范围，以下代码先不要写：
+1. 大型内容 Feed。
+2. 短视频和直播。
+3. 自营商城、订单、支付、退款。
+4. 复杂群聊、语音、视频通话。
+5. 精确实时定位共享。
+6. AI 诊疗。
+7. 多城市运营系统。
+8. 深度学习推荐模型。
+9. 商家 SaaS 收费。
+10. 全国扩城。
 
-1. 自营商城、购物车、订单、库存、退款。
-2. 担保支付、平台赔付、交易仲裁。
-3. 复杂 IM、群聊、语音、视频通话。
-4. 直播、长视频、复杂创作者后台。
-5. 精确地图社交、实时定位共享。
-6. AI 诊疗建议、处方、医疗判断。
-7. 多城市复杂运营系统。
-8. 微服务拆分、服务网格、复杂推荐模型。
-9. 商家 SaaS 收费、发票、复杂套餐。
-10. 海外合规和多语言版本。
+## 15. 最小可运行 Demo 切法
 
-## 12. 最小可运行版本切法
+最快 Demo 不需要真实后端，可以先在 Web 里模拟：
 
-如果要最快看到一个能演示的版本，可以先切一个 Demo 版：
+1. 5-10 张狗狗 profile 卡片。
+2. 右滑触发 match。
+3. Match 后显示聊天窗口。
+4. 选择公开地点和时间创建 playdate。
+5. 完成活动后提交反馈。
+6. 后台展示推荐漏斗、match 数、playdate 数、举报数。
 
-1. 后端只写用户、宠物、帖子、评论、点赞、健康记录、服务线索。
-2. App 只写登录、建档、首页、发布、宠物主页、健康记录、服务列表。
-3. Web 只写运营后台审核列表和帖子公开页。
-4. 附近页先用城市字段和种子数据，不接真实地图。
-5. 审核先人工后台流转，云审核接口用适配器预留。
+Demo 主链路：
 
-Demo 版能证明主链路：登录 -> 建宠物 -> 发宠物动态 -> 互动 -> 记录健康 -> 找服务 -> 后台审核/查看线索。
+```text
+创建狗狗档案 -> 查看附近推荐 -> 右滑 -> Match -> 聊天 -> 发起 Playdate -> 反馈 -> 后台查看数据
+```
 
+这条链路比原来的“发动态 -> 点赞 -> 找服务”更符合新的产品定位，也更能体现推荐、缓存、低延迟和最终一致性的工程价值。

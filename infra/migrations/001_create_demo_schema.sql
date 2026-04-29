@@ -1,109 +1,174 @@
 create table if not exists users (
   id bigserial primary key,
+  email_hash text unique,
   phone_hash text unique,
   nickname text not null,
   avatar_url text,
-  city_code text,
+  neighborhood text,
+  privacy_level text not null default 'neighborhood',
   risk_state text not null default 'normal',
   created_at timestamptz not null default now()
 );
 
+create table if not exists owner_profiles (
+  user_id bigint primary key references users(id),
+  available_windows jsonb not null default '[]'::jsonb,
+  meetup_preferences jsonb not null default '[]'::jsonb,
+  max_distance_km numeric(5, 2) not null default 5,
+  safety_preferences jsonb not null default '[]'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists pets (
   id bigserial primary key,
+  owner_user_id bigint not null references users(id),
   name text not null,
-  species text not null,
+  species text not null default 'dog',
   breed text,
-  sex text,
   birth_date date,
+  sex text,
   avatar_url text,
-  city_code text,
-  visibility text not null default 'public',
-  status text not null default 'active',
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint pets_name_length check (char_length(name) between 1 and 20),
-  constraint pets_species_check check (species in ('cat', 'dog', 'other')),
-  constraint pets_sex_check check (sex is null or sex in ('female', 'male', 'unknown')),
-  constraint pets_visibility_check check (visibility in ('public', 'city_only', 'private')),
-  constraint pets_status_check check (status in ('active', 'archived'))
+  constraint pets_name_length check (char_length(name) between 1 and 40),
+  constraint pets_species_check check (species in ('dog')),
+  constraint pets_sex_check check (sex is null or sex in ('female', 'male', 'unknown'))
 );
 
-create table if not exists owner_pets (
+create table if not exists pet_profiles (
+  pet_id bigint primary key references pets(id),
+  size text not null,
+  neutered boolean,
+  vaccine_status text not null default 'unknown',
+  personality_tags jsonb not null default '[]'::jsonb,
+  activity_preferences jsonb not null default '[]'::jsonb,
+  accepts_large_dogs boolean not null default false,
+  energy_level text not null default 'medium',
+  neighborhood text,
+  updated_at timestamptz not null default now(),
+  constraint pet_profiles_size_check check (size in ('small', 'medium', 'large')),
+  constraint pet_profiles_vaccine_check check (vaccine_status in ('verified', 'self_reported', 'unknown')),
+  constraint pet_profiles_energy_check check (energy_level in ('low', 'medium', 'high'))
+);
+
+create table if not exists locations (
+  id bigserial primary key,
+  name text not null,
+  type text not null,
+  city text,
+  neighborhood text,
+  geohash text,
+  is_public_place boolean not null default true,
+  safety_notes text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists swipes (
+  id bigserial primary key,
   user_id bigint not null references users(id),
   pet_id bigint not null references pets(id),
-  role text not null default 'owner',
+  target_user_id bigint not null references users(id),
+  target_pet_id bigint not null references pets(id),
+  action text not null,
+  idempotency_key text not null,
+  created_at timestamptz not null default now(),
+  constraint swipes_action_check check (action in ('like', 'pass')),
+  unique (user_id, target_pet_id),
+  unique (idempotency_key)
+);
+
+create table if not exists matches (
+  id bigserial primary key,
+  user_low_id bigint not null references users(id),
+  user_high_id bigint not null references users(id),
+  pet_low_id bigint not null references pets(id),
+  pet_high_id bigint not null references pets(id),
   status text not null default 'active',
-  is_primary boolean not null default false,
-  invited_by_user_id bigint references users(id),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint owner_pets_role_check check (role in ('owner', 'family', 'viewer')),
-  constraint owner_pets_status_check check (status in ('active', 'pending', 'removed')),
-  primary key (user_id, pet_id)
+  constraint matches_status_check check (status in ('active', 'unmatched', 'blocked')),
+  unique (user_low_id, user_high_id, pet_low_id, pet_high_id)
 );
 
-create unique index if not exists owner_pets_one_primary_per_user
-  on owner_pets (user_id)
-  where is_primary and status = 'active';
-
-create table if not exists posts (
+create table if not exists conversations (
   id bigserial primary key,
-  author_user_id bigint not null references users(id),
-  post_type text not null default 'image_text',
+  match_id bigint not null references matches(id),
+  status text not null default 'active',
+  last_message_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists messages (
+  id bigserial primary key,
+  conversation_id bigint not null references conversations(id),
+  sender_user_id bigint not null references users(id),
   body text not null,
-  topic text not null,
-  city_code text,
-  visibility text not null default 'public',
-  moderation_status text not null default 'pending',
-  like_count integer not null default 0,
-  comment_count integer not null default 0,
-  collect_count integer not null default 0,
+  seq bigint not null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint posts_type_check check (post_type in ('image_text')),
-  constraint posts_visibility_check check (visibility in ('public', 'city_only', 'private')),
-  constraint posts_moderation_check check (moderation_status in ('pending', 'approved', 'rejected', 'hidden')),
-  constraint posts_body_length check (char_length(body) between 1 and 1000)
+  unique (conversation_id, seq)
 );
 
-create table if not exists post_pets (
-  post_id bigint not null references posts(id),
-  pet_id bigint not null references pets(id),
-  primary key (post_id, pet_id)
-);
-
-create table if not exists post_media (
+create table if not exists playdates (
   id bigserial primary key,
-  post_id bigint not null references posts(id),
-  media_type text not null default 'image',
-  url text not null,
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  constraint post_media_type_check check (media_type in ('image'))
-);
-
-create table if not exists health_records (
-  id bigserial primary key,
-  pet_id bigint not null references pets(id),
-  record_type text not null,
-  value_json jsonb not null default '{}'::jsonb,
-  occurred_at timestamptz not null
-);
-
-create table if not exists service_providers (
-  id bigserial primary key,
-  name text not null,
-  category text not null,
-  city_code text,
-  verify_status text not null default 'pending',
-  created_at timestamptz not null default now()
-);
-
-create table if not exists leads (
-  id bigserial primary key,
-  listing_id bigint,
-  user_id bigint references users(id),
-  pet_id bigint references pets(id),
+  creator_user_id bigint not null references users(id),
+  location_id bigint not null references locations(id),
+  start_at timestamptz not null,
+  visibility text not null default 'private',
+  vaccine_required boolean not null default true,
   status text not null default 'pending',
+  note text,
+  created_at timestamptz not null default now(),
+  constraint playdates_status_check check (status in ('pending', 'confirmed', 'cancelled', 'completed'))
+);
+
+create table if not exists playdate_participants (
+  playdate_id bigint not null references playdates(id),
+  user_id bigint not null references users(id),
+  pet_id bigint not null references pets(id),
+  status text not null default 'invited',
+  checked_in_at timestamptz,
+  primary key (playdate_id, user_id, pet_id)
+);
+
+create table if not exists feedback (
+  id bigserial primary key,
+  playdate_id bigint not null references playdates(id),
+  from_user_id bigint not null references users(id),
+  to_user_id bigint references users(id),
+  rating integer not null,
+  repeat_intent text not null,
+  safety_flag boolean not null default false,
+  note text,
+  created_at timestamptz not null default now(),
+  constraint feedback_rating_check check (rating between 1 and 5)
+);
+
+create table if not exists reports (
+  id bigserial primary key,
+  reporter_user_id bigint references users(id),
+  target_type text not null,
+  target_id text not null,
+  reason text not null,
+  status text not null default 'open',
   created_at timestamptz not null default now()
+);
+
+create table if not exists blocks (
+  blocker_user_id bigint not null references users(id),
+  blocked_user_id bigint not null references users(id),
+  reason text,
+  created_at timestamptz not null default now(),
+  primary key (blocker_user_id, blocked_user_id)
+);
+
+create table if not exists recommendation_logs (
+  id bigserial primary key,
+  user_id bigint not null references users(id),
+  candidate_pet_id bigint not null references pets(id),
+  rank_position integer,
+  features_snapshot jsonb not null default '{}'::jsonb,
+  shown_at timestamptz not null default now(),
+  action text,
+  matched boolean not null default false,
+  chat_started boolean not null default false,
+  playdate_created boolean not null default false,
+  feedback_score integer
 );
