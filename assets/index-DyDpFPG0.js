@@ -72,7 +72,7 @@
     <section class="card-grid">
       ${(e?t:U()).map(i=>O(i,!1,e?"api":"local")).join("")}
     </section>
-  `}function O(e,t,a="local"){const n=a==="api"?`data-api-swipe-like="${e.id}"`:`data-swipe-like="${e.id}"`,o=a==="api"?`data-api-swipe-pass="${e.id}"`:`data-swipe-pass="${e.id}"`;return`
+  `}function O(e,t,a="local"){const n=a==="api"?`data-api-swipe-like="${e.id}"`:`data-swipe-like="${e.id}"`,o=a==="api"?`data-api-swipe-pass="${e.id}"`:`data-swipe-pass="${e.id}"`,i=a==="api"?`data-api-report-pet="${e.id}"`:`data-report-pet="${e.id}"`,p=a==="api"?`data-api-block-user="${e.ownerUserId}"`:`data-block-user="${e.ownerUserId}"`;return`
     <article class="dog-card ${t?"primary-card":""}">
       <img src="${e.avatar}" alt="${e.name}" />
       <div class="dog-card-body">
@@ -91,8 +91,8 @@
         <div class="post-actions">
           <button ${o}>Pass</button>
           <button class="primary" ${n}>Like</button>
-          <button data-api-report-pet="${e.id}">Report</button>
-          <button data-api-block-user="${e.ownerUserId}">Block</button>
+          <button ${i}>Report</button>
+          <button ${p}>Block</button>
         </div>
       </div>
     </article>
