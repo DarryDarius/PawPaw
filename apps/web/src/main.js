@@ -870,7 +870,7 @@ function hero() {
           playdates, feedback, and safety controls.
         </p>
         <div class="hero-actions">
-          <button class="primary" data-tab="recommend">Start swiping</button>
+          <button class="primary" data-scroll-target="recommend-feed">Start swiping</button>
           <button class="secondary" data-tab="playdates">Plan playdate</button>
         </div>
       </div>
@@ -912,7 +912,7 @@ function recommendView() {
   return `
     ${hero()}
     ${stats()}
-    <section class="section-heading">
+    <section class="section-heading" id="recommend-feed">
       <div>
         <p class="eyebrow">Recommendation Feed</p>
         <h2>Swipe compatible nearby dogs</h2>
@@ -1549,6 +1549,11 @@ function render() {
 function bindEvents() {
   document.querySelectorAll("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => setState({ activeTab: button.dataset.tab }));
+  });
+  document.querySelectorAll("[data-scroll-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelector(`#${button.dataset.scrollTarget}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   });
   document.querySelector("#login-form")?.addEventListener("submit", login);
   document.querySelector("#load-account")?.addEventListener("click", loadAccount);
