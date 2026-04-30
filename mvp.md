@@ -219,18 +219,57 @@ Match 里的 user/pet id 需要归一化，避免 A-B 和 B-A 重复创建。
 
 ## 11. 推荐系统路线
 
-### MVP：规则召回 + 加权排序
+### 11.1 MVP 阶段不用复杂模型
 
-召回过滤：
+PawPaw 的推荐对象不是普通商品，而是“狗狗 + 主人 + 线下见面场景”。早期数据量少，且安全约束强，所以 MVP 不优先使用深度学习或纯协同过滤。
 
-1. 距离/区域：同 neighborhood 或 5km 内。
-2. 体型：小型犬优先匹配小型/中型犬。
-3. 性格：胆小狗不优先推荐高能量大型犬。
-4. 疫苗：未确认疫苗的狗狗降低排序或限制 playdate。
-5. 时间：可用时间窗口有重叠。
-6. 安全：排除 block、report 高风险用户。
+当前 MVP 推荐策略是：
 
-排序公式：
+```text
+候选召回 -> 硬规则过滤 -> 可解释加权排序 -> 行为日志记录
+```
+
+这样做的好处：
+
+1. 冷启动时也能工作。
+2. 推荐原因可解释，方便用户信任。
+3. 运营可以手动调权重。
+4. 安全规则始终可控。
+5. 后续可以平滑接入开源推荐服务或离线模型。
+
+### 11.2 候选召回
+
+先从数据库里召回可能适合的候选狗狗，召回范围不要太大。
+
+召回条件：
+
+1. 同 neighborhood 优先。
+2. 默认 5km 内，可按用户 `max_distance_km` 调整。
+3. 狗狗 profile 完整度达标。
+4. 主人和狗狗状态正常。
+5. 可用时间有交集的候选优先。
+6. 新用户或新狗狗保留少量探索曝光。
+
+首发区域建议只做一个小片区，例如 Hyde Park / UChicago 周边。推荐系统早期最重要的是局部密度，不是算法复杂度。
+
+### 11.3 硬规则过滤
+
+以下规则必须在排序前执行，不能交给模型决定：
+
+1. 排除当前用户自己的狗狗。
+2. 排除已 swipe 的候选。
+3. 排除已 block 的用户。
+4. 排除高风险或被封禁用户。
+5. 排除隐私设置不可见的 profile。
+6. 排除不符合线下见面安全要求的候选。
+7. 如果 playdate 要求疫苗，则限制未确认疫苗状态的候选。
+8. 胆小、小型、不能接受大型犬的狗狗，不优先推荐高能量大型犬。
+
+安全、隐私、合规规则永远是 hard filter。模型只能参与排序，不能覆盖安全底线。
+
+### 11.4 加权排序
+
+MVP 使用规则加权分数：
 
 ```text
 score = 0.25 * location_score
@@ -238,27 +277,121 @@ score = 0.25 * location_score
       + 0.15 * size_compatibility
       + 0.15 * schedule_overlap
       + 0.10 * activity_preference
-      + 0.10 * historical_match_rate
-      + 0.05 * freshness
+      + 0.10 * vaccine_trust_score
+      + 0.05 * freshness_score
 ```
 
-### 后续：基于行为数据训练
+字段含义：
 
-用 `recommendation_logs` 记录曝光、滑动、match、聊天、playdate 和反馈，后续预测：
+| 特征 | 说明 |
+| --- | --- |
+| `location_score` | 距离越近、同 neighborhood 分越高 |
+| `personality_score` | 性格标签重合、互补和风险冲突 |
+| `size_compatibility` | 体型兼容，尤其保护小型犬和胆小犬 |
+| `schedule_overlap` | 主人可用时间窗口重合度 |
+| `activity_preference` | walk、dog park、cafe、training 等偏好重合 |
+| `vaccine_trust_score` | verified 高于 self_reported，高于 unknown |
+| `freshness_score` | 新 profile 和长时间未曝光 profile 适度加分 |
 
-1. `P(user likes candidate pet)`
-2. `P(mutual match)`
-3. `P(playdate success)`
+返回给前端时必须带 `reason_codes`，例如：
 
-评估指标：
+```json
+[
+  "same_neighborhood",
+  "schedule_overlap_weekend_morning",
+  "verified_vaccine",
+  "small_dog_compatible",
+  "shared_activity_dog_park"
+]
+```
+
+前端展示文案可以是：
+
+```text
+Nearby in Hyde Park
+Both available weekend morning
+Verified vaccine status
+Good size compatibility
+Both enjoy dog parks
+```
+
+### 11.5 行为日志和权重
+
+推荐质量的核心不是一开始选复杂模型，而是把行为数据记完整。
+
+`recommendation_logs` 需要记录：
+
+1. 谁看到了谁。
+2. 候选排序位置。
+3. 当时的 score 和 feature snapshot。
+4. 用户是否 pass / like。
+5. 是否生成 match。
+6. match 后是否聊天。
+7. 是否创建 playdate。
+8. playdate 是否完成。
+9. 反馈评分和 repeat intent。
+10. 是否发生 report / block。
+
+建议把行为转成训练样本时使用以下初始权重：
+
+| 行为 | 权重 |
+| --- | ---: |
+| impression | 0 |
+| pass | -1 |
+| like | +2 |
+| mutual match | +5 |
+| chat started | +8 |
+| playdate created | +15 |
+| playdate completed | +25 |
+| positive feedback | +30 |
+| report | -40 |
+| block | -50 |
+
+这些权重不是最终模型，只是帮助后续做离线评估、简单排序模型和推荐服务接入。
+
+### 11.6 开源推荐方案取舍
+
+市面上有成熟开源方案，但不建议在 MVP 第一阶段直接替代业务规则。
+
+| 方案 | 适合场景 | PawPaw 使用建议 |
+| --- | --- | --- |
+| Gorse | 开源推荐服务，支持 REST API、协同过滤、相似推荐、在线反馈 | 中期可作为推荐服务接入 |
+| LightFM | Hybrid 推荐，能结合用户特征、物品特征和行为 | 有行为数据后做离线实验 |
+| implicit | ALS / BPR 等隐式反馈协同过滤 | 用户行为量足够后再试 |
+| RecBole | 推荐算法研究和 benchmark | 适合实验，不优先生产接入 |
+| TensorFlow Recommenders | 自定义双塔召回、排序模型 | 数据规模较大后再考虑 |
+| Metarank | 个性化 reranking 服务 | 有稳定候选集后做重排 |
+| Vespa | 搜索、向量召回、复杂 ranking serving | 早期偏重，不建议 MVP 使用 |
+
+推荐接入顺序：
+
+1. MVP：Go 内部实现规则召回、过滤、加权排序。
+2. Alpha：积累 1,000-10,000 条有效行为后，用 LightFM 或 Gorse 离线对比。
+3. Beta：如果 Gorse 效果稳定，把它作为候选或重排服务，但业务层仍保留安全过滤。
+4. 增长期：再考虑 learning-to-rank、TensorFlow Recommenders 或 Metarank。
+
+### 11.7 推荐系统分阶段目标
+
+| 阶段 | 推荐方式 | 目标 |
+| --- | --- | --- |
+| Demo | 前端静态规则 | 展示产品闭环 |
+| MVP | 数据库召回 + Go 规则排序 | 小区域真实可用 |
+| Alpha | 规则排序 + 行为权重校准 | 提升 match 和 playdate 质量 |
+| Beta | Gorse / LightFM 辅助排序 | 利用真实行为个性化 |
+| 增长期 | 双阶段召回排序 | 提升规模化推荐效率 |
+
+### 11.8 评估指标
+
+不要只看右滑率。右滑率高但 playdate 少，说明推荐只是“看起来喜欢”，没有形成线下价值。
 
 | 阶段 | 指标 |
 | --- | --- |
-| 推荐 | right-swipe rate、match rate |
-| 质量 | chat initiation rate、playdate creation rate |
-| 线下 | playdate completion rate、repeat meetup rate |
+| 推荐 | right-swipe rate、pass rate、candidate exhaustion rate |
+| Match | mutual match rate、duplicate match prevention |
+| 质量 | chat initiation rate、reply rate、playdate creation rate |
+| 线下 | playdate confirmation rate、completion rate、repeat meetup rate |
 | 安全 | report rate、block rate、bad feedback rate |
-| 留存 | D1/D7/D30 |
+| 留存 | D1、D7、D30 |
 
 ## 12. 缓存与低延迟
 
@@ -328,10 +461,10 @@ score = 0.25 * location_score
 | 工作 | 产出 |
 | --- | --- |
 | 推荐召回 | 按区域、体型、性格、时间过滤候选 |
-| 加权排序 | 可解释 score 和 reason codes |
+| 加权排序 | Go 内部规则 scorer、可解释 score 和 reason codes |
 | Swipe | 左滑/右滑、已滑过滤、低延迟写入 |
 | Match | 双向喜欢生成 match、通知、match 列表 |
-| 埋点 | impression、swipe、match 记录 |
+| 埋点 | impression、swipe、match、feature snapshot 记录 |
 
 ### 第 3 阶段：Playdate 和安全，3-4 周
 
@@ -390,7 +523,7 @@ score = 0.25 * location_score
 2. 引入 WebSocket 聊天。
 3. 增加活动页和官方 dog meetup。
 4. 增加服务目录：grooming、vet、training。
-5. 用推荐日志训练简单二分类模型。
+5. 用推荐日志校准规则权重，并离线评估 Gorse / LightFM。
 6. 增加会员：高级筛选、更多曝光、活动优先报名。
 7. 做公开宠物卡和地点 SEO 页面。
 

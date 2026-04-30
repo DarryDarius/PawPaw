@@ -38,15 +38,45 @@ PawPaw 当前方向是：
 
 ```text
 GET  /healthz
-GET  /api/recommendations/feed
-POST /api/swipes
-GET  /api/matches
-GET  /api/playdates
-POST /api/playdates
-GET  /api/locations
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
+GET  /api/v1/me
+PATCH /api/v1/me
+PATCH /api/v1/me/availability
+POST /api/v1/pets
+GET  /api/v1/me/pets
+GET  /api/v1/pets/:pet_id
+PATCH /api/v1/pets/:pet_id
+PATCH /api/v1/pets/:pet_id/profile
+GET  /api/v1/recommendations/feed
+POST /api/v1/swipes
+GET  /api/v1/swipes/me
+GET  /api/v1/matches
+GET  /api/v1/matches/:match_id
+POST /api/v1/matches/:match_id/unmatch
+GET  /api/v1/conversations/:conversation_id/messages
+POST /api/v1/conversations/:conversation_id/messages
+GET  /api/v1/locations
+GET  /api/v1/playdates
+POST /api/v1/playdates
+GET  /api/v1/playdates/:playdate_id
+POST /api/v1/playdates/:playdate_id/respond
+POST /api/v1/playdates/:playdate_id/cancel
+POST /api/v1/playdates/:playdate_id/check-in
+POST /api/v1/playdates/:playdate_id/feedback
+POST /api/v1/reports
+GET  /api/v1/blocks
+POST /api/v1/blocks
+DELETE /api/v1/blocks/:blocked_user_id
+GET  /api/v1/admin/dashboard
+GET  /api/v1/admin/reports
+POST /api/v1/admin/reports/:report_id/resolve
+GET  /api/v1/admin/users
+GET  /api/v1/admin/pets
+GET  /api/v1/admin/playdates
 ```
 
-这些接口现在使用内存数据，后续按 `code.md` 接 PostgreSQL、Redis、异步事件和真实鉴权。
+Auth、Me、Pet Profile、推荐、swipe、match、chat、playdate、feedback、safety 和 admin dashboard 已使用 PostgreSQL 和 Bearer session。
 
 ### 数据库 Schema
 
@@ -78,6 +108,19 @@ recommendation_logs
 npm install
 ```
 
+启动本地基础设施：
+
+```bash
+npm run db:up
+```
+
+执行数据库迁移和 seed：
+
+```bash
+npm run db:migrate
+npm run db:seed
+```
+
 运行 Web Demo：
 
 ```bash
@@ -93,14 +136,21 @@ npm run build
 运行 API：
 
 ```bash
-go run ./apps/api/cmd/api
+npm run api:dev
 ```
 
 检查 API：
 
 ```bash
 curl http://localhost:8080/healthz
-curl http://localhost:8080/api/recommendations/feed
+curl http://localhost:8080/api/v1/recommendations/feed
+```
+
+默认连接：
+
+```text
+DATABASE_URL=postgres://pawpaw:pawpaw@localhost:5432/pawpaw?sslmode=disable
+REDIS_URL=redis://localhost:6379/0
 ```
 
 ## 当前开发依据

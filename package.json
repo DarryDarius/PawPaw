@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite apps/web --host 0.0.0.0",
     "build": "vite build apps/web --outDir ../../dist --emptyOutDir",
-    "preview": "vite preview dist --host 0.0.0.0"
+    "preview": "vite preview dist --host 0.0.0.0",
+    "api:dev": "go run ./apps/api/cmd/api",
+    "db:up": "docker compose up -d postgres redis",
+    "db:migrate": "go run ./apps/api/cmd/migrate",
+    "db:seed": "go run ./apps/api/cmd/seed"
   },
   "devDependencies": {
     "vite": "^7.0.0"

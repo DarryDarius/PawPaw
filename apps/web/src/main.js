@@ -7,8 +7,21 @@ const dogPhotos = [
 ];
 
 const todayText = "2026-04-29";
+const apiBaseUrl = window.localStorage.getItem("pawpaw-api-base-url") || "http://localhost:8080/api/v1";
 
 const initialState = {
+  api: {
+    token: window.localStorage.getItem("pawpaw-session-token") || "",
+    me: null,
+    recommendations: [],
+    matches: [],
+    messages: {},
+    locations: [],
+    playdates: [],
+    admin: null,
+    status: "",
+    error: ""
+  },
   user: {
     id: "u1",
     nickname: "Darius",
@@ -173,13 +186,21 @@ function loadState() {
   const saved = window.localStorage.getItem("pawpaw-playdate-state");
   if (!saved) return structuredClone(initialState);
   try {
-    return { ...structuredClone(initialState), ...JSON.parse(saved) };
+    const parsed = JSON.parse(saved);
+    return {
+      ...structuredClone(initialState),
+      ...parsed,
+      api: { ...structuredClone(initialState).api, ...(parsed.api || {}) }
+    };
   } catch {
     return structuredClone(initialState);
   }
 }
 
 function saveState() {
+  if (state.api?.token) {
+    window.localStorage.setItem("pawpaw-session-token", state.api.token);
+  }
   window.localStorage.setItem("pawpaw-playdate-state", JSON.stringify(state));
 }
 
@@ -197,6 +218,344 @@ function showToast(message) {
     state.toast = "";
     render();
   }, 2200);
+}
+
+function setApiState(next) {
+  state.api = { ...state.api, ...next };
+  saveState();
+  render();
+}
+
+async function apiRequest(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+  if (state.api.token) {
+    headers.Authorization = `Bearer ${state.api.token}`;
+  }
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    ...options,
+    headers
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || "API request failed");
+  }
+  return payload;
+}
+
+async function login(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  setApiState({ status: "Logging in...", error: "" });
+  try {
+    const payload = await apiRequest("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: String(form.get("email") || "").trim(),
+        nickname: String(form.get("nickname") || "").trim(),
+        neighborhood: String(form.get("neighborhood") || "").trim()
+      })
+    });
+    window.localStorage.setItem("pawpaw-session-token", payload.session.token);
+    setApiState({ token: payload.session.token, status: "Logged in", error: "" });
+    await loadAccount();
+    showToast("Logged in");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadAccount() {
+  if (!state.api.token) return;
+  setApiState({ status: "Loading profile...", error: "" });
+  try {
+    const me = await apiRequest("/me");
+    setApiState({ me, status: "Profile loaded", error: "" });
+    if (me.profileComplete) {
+      await loadLocations();
+      await loadRecommendations();
+      await loadApiMatches();
+      await loadApiPlaydates();
+      await loadAdminDashboard();
+    }
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadRecommendations() {
+  if (!state.api.token) return;
+  setApiState({ status: "Loading recommendations...", error: "" });
+  try {
+    const payload = await apiRequest("/recommendations/feed");
+    setApiState({ recommendations: payload.recommendations || [], status: "Recommendations loaded", error: "" });
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function apiSwipe(targetPetId, action) {
+  const sourcePet = state.api.me?.pets?.[0];
+  if (!sourcePet) return showToast("Create a dog profile first");
+  setApiState({ status: `${action === "like" ? "Liking" : "Skipping"} dog...`, error: "" });
+  try {
+    const payload = await apiRequest("/swipes", {
+      method: "POST",
+      body: JSON.stringify({
+        petId: Number(sourcePet.id),
+        targetPetId: Number(targetPetId),
+        action,
+        idempotencyKey: `${state.api.me.user.id}:${targetPetId}:${action}:${Date.now()}`
+      })
+    });
+    await loadRecommendations();
+    if (payload.matched) {
+      await loadApiMatches();
+      setState({ activeTab: "matches" });
+      showToast("It's a match");
+    } else {
+      showToast(action === "like" ? "Liked dog" : "Skipped dog");
+    }
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadApiMatches() {
+  if (!state.api.token) return;
+  try {
+    const payload = await apiRequest("/matches");
+    const matches = payload.matches || [];
+    const messages = { ...state.api.messages };
+    for (const match of matches) {
+      const messagePayload = await apiRequest(`/conversations/${match.conversationId}/messages`);
+      messages[match.conversationId] = messagePayload.messages || [];
+    }
+    setApiState({ matches, messages, status: "Matches loaded", error: "" });
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadLocations() {
+  if (!state.api.token) return;
+  try {
+    const payload = await apiRequest("/locations");
+    setApiState({ locations: payload.locations || [], error: "" });
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadApiPlaydates() {
+  if (!state.api.token) return;
+  try {
+    const payload = await apiRequest("/playdates");
+    setApiState({ playdates: payload.playdates || [], status: "Playdates loaded", error: "" });
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function createApiPlaydate(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  try {
+    await apiRequest("/playdates", {
+      method: "POST",
+      body: JSON.stringify({
+        matchId: Number(form.get("matchId")),
+        locationId: Number(form.get("locationId")),
+        startAt: String(form.get("startAt") || ""),
+        note: String(form.get("note") || "").trim(),
+        vaccineRequired: form.get("vaccineRequired") === "on"
+      })
+    });
+    event.currentTarget.reset();
+    await loadApiPlaydates();
+    await loadAdminDashboard();
+    showToast("Playdate invite created");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function updateApiPlaydate(id, action, status = "") {
+  try {
+    const path = action === "respond" ? `/playdates/${id}/respond` : `/playdates/${id}/${action}`;
+    await apiRequest(path, {
+      method: "POST",
+      body: action === "respond" ? JSON.stringify({ status }) : JSON.stringify({})
+    });
+    await loadApiPlaydates();
+    await loadAdminDashboard();
+    showToast(`Playdate ${status || action}`);
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function submitApiFeedback(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const playdateId = form.get("playdateId");
+  try {
+    await apiRequest(`/playdates/${playdateId}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({
+        toUserId: Number(form.get("toUserId") || 0),
+        rating: Number(form.get("rating")),
+        repeatIntent: String(form.get("repeatIntent") || "maybe"),
+        safetyFlag: form.get("safetyFlag") === "on",
+        note: String(form.get("note") || "").trim()
+      })
+    });
+    event.currentTarget.reset();
+    await loadApiPlaydates();
+    await loadAdminDashboard();
+    showToast("Feedback saved");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function apiReport(targetType, targetId, reason) {
+  if (!state.api.token) return reportTarget(targetType, targetId, reason);
+  try {
+    await apiRequest("/reports", {
+      method: "POST",
+      body: JSON.stringify({ targetType, targetId: String(targetId), reason })
+    });
+    await loadAdminDashboard();
+    showToast("Report sent");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function apiBlock(blockedUserId) {
+  if (!state.api.token) return blockUser(String(blockedUserId));
+  try {
+    await apiRequest("/blocks", {
+      method: "POST",
+      body: JSON.stringify({ blockedUserId: Number(blockedUserId), reason: "Blocked from recommendation surface" })
+    });
+    await loadRecommendations();
+    await loadAdminDashboard();
+    showToast("User blocked");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function loadAdminDashboard() {
+  if (!state.api.token) return;
+  try {
+    const [dashboard, reports] = await Promise.all([apiRequest("/admin/dashboard"), apiRequest("/admin/reports")]);
+    setApiState({ admin: { ...(dashboard.dashboard || {}), reports: reports.reports || [] }, error: "" });
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function resolveApiReport(id) {
+  try {
+    await apiRequest(`/admin/reports/${id}/resolve`, { method: "POST", body: JSON.stringify({}) });
+    await loadAdminDashboard();
+    showToast("Report resolved");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function sendApiMessage(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const conversationId = form.get("conversationId");
+  const body = String(form.get("body") || "").trim();
+  if (!conversationId || !body) return;
+  try {
+    await apiRequest(`/conversations/${conversationId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ body })
+    });
+    event.currentTarget.reset();
+    await loadApiMatches();
+    showToast("Message sent");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function saveOwnerProfile(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  setApiState({ status: "Saving owner profile...", error: "" });
+  try {
+    const me = await apiRequest("/me", {
+      method: "PATCH",
+      body: JSON.stringify({
+        nickname: String(form.get("nickname") || "").trim(),
+        neighborhood: String(form.get("neighborhood") || "").trim(),
+        maxDistanceKm: Number(form.get("maxDistanceKm") || 5),
+        availableWindows: form.getAll("availableWindows"),
+        meetupPreferences: form.getAll("meetupPreferences"),
+        safetyPreferences: form.getAll("safetyPreferences")
+      })
+    });
+    setApiState({ me, status: "Owner profile saved", error: "" });
+    showToast("Owner profile saved");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+async function createApiPet(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  setApiState({ status: "Creating dog profile...", error: "" });
+  try {
+    await apiRequest("/pets", {
+      method: "POST",
+      body: JSON.stringify({
+        name: String(form.get("name") || "").trim(),
+        breed: String(form.get("breed") || "").trim(),
+        birthDate: String(form.get("birthDate") || "").trim(),
+        sex: String(form.get("sex") || "unknown"),
+        avatarUrl: String(form.get("avatarUrl") || "").trim(),
+        size: String(form.get("size") || "medium"),
+        neutered: form.get("neutered") === "on",
+        vaccineStatus: String(form.get("vaccineStatus") || "unknown"),
+        personalityTags: splitTags(form.get("personalityTags")),
+        activityPreferences: splitTags(form.get("activityPreferences")),
+        acceptsLargeDogs: form.get("acceptsLargeDogs") === "on",
+        energyLevel: String(form.get("energyLevel") || "medium"),
+        neighborhood: String(form.get("neighborhood") || "").trim()
+      })
+    });
+    event.currentTarget.reset();
+    await loadAccount();
+    showToast("Dog profile created");
+  } catch (error) {
+    setApiState({ status: "", error: error.message });
+  }
+}
+
+function logoutApi() {
+  state.api = { token: "", me: null, status: "", error: "" };
+  window.localStorage.removeItem("pawpaw-session-token");
+  saveState();
+  render();
+  showToast("Logged out");
+}
+
+function splitTags(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function myPet() {
@@ -278,6 +637,17 @@ function energyLabel(energy) {
 
 function vaccineLabel(status) {
   return { verified: "Vaccine verified", self_reported: "Vaccine self-reported", unknown: "Vaccine unknown" }[status] || status;
+}
+
+function uiPet(pet = {}) {
+  return {
+    ...pet,
+    id: String(pet.id || ""),
+    ownerUserId: String(pet.ownerUserId || ""),
+    avatar: pet.avatar || pet.avatarUrl || dogPhotos[0],
+    birthDate: pet.birthDate || "2023-01-01",
+    distanceKm: pet.distanceKm || 2
+  };
 }
 
 function ageText(birthDate) {
@@ -466,6 +836,7 @@ function resetDemo() {
 
 function nav() {
   const tabs = [
+    ["onboarding", "Onboarding"],
     ["recommend", "Recommend"],
     ["matches", "Matches"],
     ["playdates", "Playdates"],
@@ -529,8 +900,15 @@ function stats() {
 }
 
 function recommendView() {
+  const useApi = Boolean(state.api.token && state.api.me?.profileComplete);
+  const apiCards = (state.api.recommendations || []).map((card) => ({
+    ...uiPet(card.pet),
+    owner: card.owner,
+    compatibility: { score: card.score, reasons: card.reasons || [] }
+  }));
   const candidates = candidatePets();
-  const first = candidates[0];
+  const cards = useApi ? apiCards : candidates;
+  const first = cards[0];
   return `
     ${hero()}
     ${stats()}
@@ -539,12 +917,15 @@ function recommendView() {
         <p class="eyebrow">Recommendation Feed</p>
         <h2>Swipe compatible nearby dogs</h2>
       </div>
-      <span class="privacy-pill">Neighborhood-level location only</span>
+      <div class="post-actions">
+        ${useApi ? `<button class="secondary" id="load-recommendations">Refresh API feed</button>` : ""}
+        <span class="privacy-pill">${useApi ? "Live API feed" : "Demo local feed"}</span>
+      </div>
     </section>
     ${
       first
         ? `<section class="swipe-layout">
-            ${swipeCard(first, true)}
+            ${swipeCard(first, true, useApi ? "api" : "local")}
             <div class="panel">
               <h3>Why this recommendation works</h3>
               ${first.compatibility.reasons.map((reason) => `<div class="place-row"><strong>${reason}</strong><span>Used in weighted scoring</span></div>`).join("")}
@@ -563,12 +944,14 @@ function recommendView() {
       </div>
     </section>
     <section class="card-grid">
-      ${allCandidateCards().map((pet) => swipeCard(pet, false)).join("")}
+      ${(useApi ? apiCards : allCandidateCards()).map((pet) => swipeCard(pet, false, useApi ? "api" : "local")).join("")}
     </section>
   `;
 }
 
-function swipeCard(pet, primary) {
+function swipeCard(pet, primary, mode = "local") {
+  const likeAttr = mode === "api" ? `data-api-swipe-like="${pet.id}"` : `data-swipe-like="${pet.id}"`;
+  const passAttr = mode === "api" ? `data-api-swipe-pass="${pet.id}"` : `data-swipe-pass="${pet.id}"`;
   return `
     <article class="dog-card ${primary ? "primary-card" : ""}">
       <img src="${pet.avatar}" alt="${pet.name}" />
@@ -586,10 +969,10 @@ function swipeCard(pet, primary) {
         <p>${pet.personalityTags.join(" · ")}</p>
         <div class="compatibility-bar"><span style="width:${pet.compatibility.score}%"></span></div>
         <div class="post-actions">
-          <button data-swipe-pass="${pet.id}">Pass</button>
-          <button class="primary" data-swipe-like="${pet.id}">Like</button>
-          <button data-report-pet="${pet.id}">Report</button>
-          <button data-block-user="${pet.ownerUserId}">Block</button>
+          <button ${passAttr}>Pass</button>
+          <button class="primary" ${likeAttr}>Like</button>
+          <button data-api-report-pet="${pet.id}">Report</button>
+          <button data-api-block-user="${pet.ownerUserId}">Block</button>
         </div>
       </div>
     </article>
@@ -597,6 +980,9 @@ function swipeCard(pet, primary) {
 }
 
 function matchesView() {
+  if (state.api.token && state.api.me?.profileComplete) {
+    return apiMatchesView();
+  }
   return `
     <section class="section-heading">
       <div>
@@ -614,6 +1000,59 @@ function matchesView() {
         ${state.conversations.map(conversationView).join("") || `<p class="empty-note">Match first to open a conversation.</p>`}
       </div>
     </section>
+  `;
+}
+
+function apiMatchesView() {
+  return `
+    <section class="section-heading">
+      <div>
+        <p class="eyebrow">Matches</p>
+        <h2>Live matches and chat</h2>
+      </div>
+      <button class="secondary" id="load-api-matches">Refresh matches</button>
+    </section>
+    <section class="two-column">
+      <div class="panel">
+        <h3>Active matches</h3>
+        ${state.api.matches.map(apiMatchRow).join("") || `<p class="empty-note">No live matches yet. Like a dog who has liked you back.</p>`}
+      </div>
+      <div class="panel">
+        <h3>Chat</h3>
+        ${state.api.matches.map(apiConversationView).join("") || `<p class="empty-note">A live match will open a conversation here.</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function apiMatchRow(match) {
+  const target = uiPet(match.targetPet);
+  return `
+    <div class="list-row">
+      <img src="${target.avatar}" alt="${target.name}" />
+      <div>
+        <strong>${target.name}</strong>
+        <span>${target.breed} · conversation ${match.conversationId}</span>
+      </div>
+    </div>
+  `;
+}
+
+function apiConversationView(match) {
+  const target = uiPet(match.targetPet);
+  const messages = state.api.messages[match.conversationId] || [];
+  return `
+    <div class="chat-box">
+      <strong>${target.name}</strong>
+      <div class="messages">
+        ${messages.map((message) => `<p><b>${message.senderUserId === state.api.me?.user?.id ? "You" : target.name}:</b> ${message.body}</p>`).join("") || `<p>No messages yet.</p>`}
+      </div>
+      <form class="inline-form" data-api-message-form>
+        <input type="hidden" name="conversationId" value="${match.conversationId}" />
+        <input name="body" placeholder="Suggest a public place..." />
+        <button class="primary" type="submit">Send</button>
+      </form>
+    </div>
   `;
 }
 
@@ -649,6 +1088,9 @@ function conversationView(conversation) {
 }
 
 function playdatesView() {
+  if (state.api.token && state.api.me?.profileComplete) {
+    return apiPlaydatesView();
+  }
   return `
     <section class="section-heading">
       <div>
@@ -707,6 +1149,104 @@ function playdatesView() {
   `;
 }
 
+function apiPlaydatesView() {
+  const matches = state.api.matches || [];
+  const locations = state.api.locations || [];
+  const playdates = state.api.playdates || [];
+  return `
+    <section class="section-heading">
+      <div>
+        <p class="eyebrow">Playdates</p>
+        <h2>Live playdate invites and feedback</h2>
+      </div>
+      <div class="post-actions">
+        <button class="secondary" id="load-api-playdates">Refresh playdates</button>
+        <span class="privacy-pill">Public places only</span>
+      </div>
+    </section>
+    <section class="two-column">
+      <form class="panel form" id="api-playdate-form">
+        <h3>New playdate</h3>
+        <label>
+          Match
+          <select name="matchId">
+            ${matches.map((match) => `<option value="${match.id}">${match.pet.name} + ${match.targetPet.name}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          Public place
+          <select name="locationId">
+            ${locations.map((location) => `<option value="${location.id}">${location.name} · ${location.neighborhood || "Chicago"}</option>`).join("")}
+          </select>
+        </label>
+        <label>Time <input type="datetime-local" name="startAt" value="2026-05-03T10:00" /></label>
+        <label>Note <textarea name="note" rows="4" placeholder="First meetup, keep leashes on."></textarea></label>
+        <label class="check-row"><input type="checkbox" name="vaccineRequired" checked /> Require vaccine status</label>
+        <button class="primary" type="submit" ${matches.length && locations.length ? "" : "disabled"}>Send invite</button>
+      </form>
+      <div class="panel">
+        <h3>Playdate list</h3>
+        ${playdates.map(apiPlaydateRow).join("") || `<p class="empty-note">No live playdates yet.</p>`}
+      </div>
+    </section>
+    <section class="panel feedback-panel">
+      <h3>Submit feedback</h3>
+      <form class="inline-form feedback-form" id="api-feedback-form">
+        <select name="playdateId">
+          ${playdates.map((item) => `<option value="${item.id}">${item.location.name} · ${item.status}</option>`).join("")}
+        </select>
+        <select name="toUserId">
+          ${feedbackUsers(playdates).map((user) => `<option value="${user.id}">${user.label}</option>`).join("")}
+        </select>
+        <select name="rating">
+          <option value="5">5 - Great</option>
+          <option value="4">4 - Good</option>
+          <option value="3">3 - Okay</option>
+          <option value="2">2 - Poor</option>
+          <option value="1">1 - Bad</option>
+        </select>
+        <select name="repeatIntent">
+          <option value="yes">Would meet again</option>
+          <option value="maybe">Maybe</option>
+          <option value="no">No</option>
+        </select>
+        <label class="check-row"><input type="checkbox" name="safetyFlag" /> Safety concern</label>
+        <input name="note" placeholder="Optional note" />
+        <button class="primary" type="submit" ${playdates.length ? "" : "disabled"}>Save feedback</button>
+      </form>
+    </section>
+  `;
+}
+
+function apiPlaydateRow(playdate) {
+  const other = (playdate.participants || []).find((participant) => participant.userId !== state.api.me?.user?.id);
+  return `
+    <div class="playdate-row">
+      <div>
+        <strong>${other?.pet?.name || "Matched dog"} at ${playdate.location.name}</strong>
+        <span>${playdate.startAt} · ${playdate.status} · ${playdate.vaccineRequired ? "vaccine required" : "vaccine optional"}</span>
+      </div>
+      <div class="post-actions">
+        <button data-api-playdate-respond="${playdate.id}:confirmed">Confirm</button>
+        <button data-api-playdate-cancel="${playdate.id}">Cancel</button>
+        <button data-api-playdate-checkin="${playdate.id}">Check in</button>
+      </div>
+    </div>
+  `;
+}
+
+function feedbackUsers(playdates) {
+  const users = [];
+  for (const playdate of playdates) {
+    for (const participant of playdate.participants || []) {
+      if (participant.userId !== state.api.me?.user?.id) {
+        users.push({ id: participant.userId, label: participant.pet?.name || `User ${participant.userId}` });
+      }
+    }
+  }
+  return users;
+}
+
 function locationById(id) {
   return state.locations.find((location) => location.id === id);
 }
@@ -730,6 +1270,30 @@ function playdateRow(playdate) {
 }
 
 function placesView() {
+  if (state.api.token && state.api.locations?.length) {
+    return `
+      <section class="section-heading">
+        <div>
+          <p class="eyebrow">Places</p>
+          <h2>Live public meetup locations</h2>
+        </div>
+      </section>
+      <section class="card-grid">
+        ${state.api.locations
+          .map(
+            (location) => `
+              <article class="service-card">
+                <span class="tag">${location.type}</span>
+                <h3>${location.name}</h3>
+                <p>${location.neighborhood || location.city || "Chicago"}</p>
+                <p>${location.safetyNotes || "Public place for first meetups."}</p>
+              </article>
+            `
+          )
+          .join("")}
+      </section>
+    `;
+  }
   return `
     <section class="section-heading">
       <div>
@@ -752,6 +1316,119 @@ function placesView() {
         .join("")}
     </section>
   `;
+}
+
+function onboardingView() {
+  const me = state.api.me;
+  const owner = me?.ownerProfile || {};
+  const pets = me?.pets || [];
+  return `
+    <section class="section-heading">
+      <div>
+        <p class="eyebrow">Onboarding</p>
+        <h2>Create the real matchable profile</h2>
+      </div>
+      <span class="privacy-pill">${me?.profileComplete ? "Ready for recommendations" : "Profile needs setup"}</span>
+    </section>
+    <section class="two-column">
+      <form class="panel form" id="login-form">
+        <h3>Email login</h3>
+        <label>Email <input name="email" type="email" value="darius@example.com" required /></label>
+        <label>Nickname <input name="nickname" value="${me?.user?.nickname || "Darius"}" /></label>
+        <label>Neighborhood <input name="neighborhood" value="${me?.user?.neighborhood || "Hyde Park"}" /></label>
+        <div class="post-actions">
+          <button class="primary" type="submit">Login</button>
+          <button class="secondary" type="button" id="load-account" ${state.api.token ? "" : "disabled"}>Refresh</button>
+          <button type="button" id="logout-api" ${state.api.token ? "" : "disabled"}>Logout</button>
+        </div>
+        ${state.api.status ? `<p class="empty-note">${state.api.status}</p>` : ""}
+        ${state.api.error ? `<p class="error-note">${state.api.error}</p>` : ""}
+        <p class="empty-note">API: ${apiBaseUrl}</p>
+      </form>
+      <div class="panel">
+        <h3>Account status</h3>
+        ${
+          me
+            ? `
+              <div class="place-row"><strong>User</strong><span>${me.user.nickname} · ${me.user.neighborhood || "Neighborhood TBD"}</span></div>
+              <div class="place-row"><strong>Availability</strong><span>${owner.availableWindows?.join(" · ") || "Not set"}</span></div>
+              <div class="place-row"><strong>Distance</strong><span>${owner.maxDistanceKm || 5}km max</span></div>
+              <div class="place-row"><strong>Dogs</strong><span>${pets.length}</span></div>
+            `
+            : `<p class="empty-note">Login to load your persisted PawPaw profile.</p>`
+        }
+      </div>
+    </section>
+    <section class="two-column">
+      <form class="panel form" id="owner-form">
+        <h3>Owner profile</h3>
+        <label>Nickname <input name="nickname" value="${me?.user?.nickname || "Darius"}" /></label>
+        <label>Neighborhood <input name="neighborhood" value="${me?.user?.neighborhood || "Hyde Park"}" /></label>
+        <label>Max distance <input name="maxDistanceKm" type="number" min="1" max="25" step="1" value="${owner.maxDistanceKm || 5}" /></label>
+        <label class="check-row"><input type="checkbox" name="availableWindows" value="weekday_evening" ${checked(owner.availableWindows, "weekday_evening")} /> Weekday evening</label>
+        <label class="check-row"><input type="checkbox" name="availableWindows" value="weekend_morning" ${checked(owner.availableWindows, "weekend_morning")} /> Weekend morning</label>
+        <label class="check-row"><input type="checkbox" name="availableWindows" value="weekend_afternoon" ${checked(owner.availableWindows, "weekend_afternoon")} /> Weekend afternoon</label>
+        <label class="check-row"><input type="checkbox" name="meetupPreferences" value="public_place_only" ${checked(owner.meetupPreferences, "public_place_only", true)} /> Public places only</label>
+        <label class="check-row"><input type="checkbox" name="meetupPreferences" value="small_group_ok" ${checked(owner.meetupPreferences, "small_group_ok", true)} /> Small groups ok</label>
+        <label class="check-row"><input type="checkbox" name="safetyPreferences" value="vaccine_preferred" ${checked(owner.safetyPreferences, "vaccine_preferred", true)} /> Vaccine preferred</label>
+        <label class="check-row"><input type="checkbox" name="safetyPreferences" value="no_home_address" ${checked(owner.safetyPreferences, "no_home_address", true)} /> No home address sharing</label>
+        <button class="primary" type="submit" ${state.api.token ? "" : "disabled"}>Save owner profile</button>
+      </form>
+      <form class="panel form" id="api-pet-form">
+        <h3>Dog profile</h3>
+        <label>Name <input name="name" value="Mochi" required /></label>
+        <label>Breed <input name="breed" value="Corgi" /></label>
+        <label>Birth date <input name="birthDate" type="date" value="2023-05-12" /></label>
+        <label>Sex
+          <select name="sex">
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label>Size
+          <select name="size">
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
+        <label>Energy
+          <select name="energyLevel">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>Vaccine status
+          <select name="vaccineStatus">
+            <option value="verified">Verified</option>
+            <option value="self_reported">Self reported</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label>Personality tags <input name="personalityTags" value="friendly,gentle,shy_at_first" /></label>
+        <label>Activity preferences <input name="activityPreferences" value="walk,dog_park,training" /></label>
+        <label>Neighborhood <input name="neighborhood" value="${me?.user?.neighborhood || "Hyde Park"}" /></label>
+        <label>Avatar URL <input name="avatarUrl" value="${dogPhotos[0]}" /></label>
+        <label class="check-row"><input type="checkbox" name="neutered" checked /> Neutered</label>
+        <label class="check-row"><input type="checkbox" name="acceptsLargeDogs" /> Accepts large dogs</label>
+        <button class="primary" type="submit" ${state.api.token ? "" : "disabled"}>Create dog profile</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h3>Saved dogs</h3>
+      ${
+        pets.length
+          ? pets.map((pet) => `<div class="place-row"><strong>${pet.name}</strong><span>${pet.breed || "Breed TBD"} · ${sizeLabel(pet.size)} · ${vaccineLabel(pet.vaccineStatus)}</span></div>`).join("")
+          : `<p class="empty-note">No persisted dog profile yet.</p>`
+      }
+    </section>
+  `;
+}
+
+function checked(items = [], value, fallback = false) {
+  return (items.length ? items.includes(value) : fallback) ? "checked" : "";
 }
 
 function profileView() {
@@ -787,6 +1464,31 @@ function profileView() {
 }
 
 function adminView() {
+  if (state.api.token && state.api.admin) {
+    const dashboard = state.api.admin;
+    const reports = dashboard.reports || [];
+    const statKeys = ["users", "pets", "recommendationLogs", "likes", "matches", "messages", "playdates", "completedPlaydates", "feedback", "reports", "blocks"];
+    return `
+      <section class="section-heading">
+        <div>
+          <p class="eyebrow">Admin</p>
+          <h2>Live MVP funnel and safety queue</h2>
+        </div>
+        <button class="secondary" id="load-admin-dashboard">Refresh admin</button>
+      </section>
+      <section class="stats">
+        ${statKeys.map((key) => `<article><span>${dashboard[key] || 0}</span><p>${key}</p></article>`).join("")}
+      </section>
+      <section class="panel">
+        <h3>Reports</h3>
+        ${
+          reports.length
+            ? reports.map((report) => `<div class="admin-row"><div><strong>${report.reason}</strong><span>${report.targetType}:${report.targetId} · ${report.status}</span></div><button data-api-resolve-report="${report.id}">Resolve</button></div>`).join("")
+            : `<p class="empty-note">No reports in the queue.</p>`
+        }
+      </section>
+    `;
+  }
   const funnel = {
     impressions: state.recommendationLogs.length,
     likes: state.swipes.filter((item) => item.action === "like").length,
@@ -822,6 +1524,7 @@ function adminView() {
 
 function activeView() {
   const views = {
+    onboarding: onboardingView,
     recommend: recommendView,
     matches: matchesView,
     playdates: playdatesView,
@@ -844,6 +1547,45 @@ function render() {
 function bindEvents() {
   document.querySelectorAll("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => setState({ activeTab: button.dataset.tab }));
+  });
+  document.querySelector("#login-form")?.addEventListener("submit", login);
+  document.querySelector("#load-account")?.addEventListener("click", loadAccount);
+  document.querySelector("#logout-api")?.addEventListener("click", logoutApi);
+  document.querySelector("#owner-form")?.addEventListener("submit", saveOwnerProfile);
+  document.querySelector("#api-pet-form")?.addEventListener("submit", createApiPet);
+  document.querySelector("#load-recommendations")?.addEventListener("click", loadRecommendations);
+  document.querySelector("#load-api-matches")?.addEventListener("click", loadApiMatches);
+  document.querySelector("#load-api-playdates")?.addEventListener("click", loadApiPlaydates);
+  document.querySelector("#load-admin-dashboard")?.addEventListener("click", loadAdminDashboard);
+  document.querySelector("#api-playdate-form")?.addEventListener("submit", createApiPlaydate);
+  document.querySelector("#api-feedback-form")?.addEventListener("submit", submitApiFeedback);
+  document.querySelectorAll("[data-api-message-form]").forEach((form) => form.addEventListener("submit", sendApiMessage));
+  document.querySelectorAll("[data-api-swipe-like]").forEach((button) => {
+    button.addEventListener("click", () => apiSwipe(button.dataset.apiSwipeLike, "like"));
+  });
+  document.querySelectorAll("[data-api-swipe-pass]").forEach((button) => {
+    button.addEventListener("click", () => apiSwipe(button.dataset.apiSwipePass, "pass"));
+  });
+  document.querySelectorAll("[data-api-report-pet]").forEach((button) => {
+    button.addEventListener("click", () => apiReport("pet", button.dataset.apiReportPet, "User reported dog profile"));
+  });
+  document.querySelectorAll("[data-api-block-user]").forEach((button) => {
+    button.addEventListener("click", () => apiBlock(button.dataset.apiBlockUser));
+  });
+  document.querySelectorAll("[data-api-playdate-respond]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const [id, status] = button.dataset.apiPlaydateRespond.split(":");
+      updateApiPlaydate(id, "respond", status);
+    });
+  });
+  document.querySelectorAll("[data-api-playdate-cancel]").forEach((button) => {
+    button.addEventListener("click", () => updateApiPlaydate(button.dataset.apiPlaydateCancel, "cancel"));
+  });
+  document.querySelectorAll("[data-api-playdate-checkin]").forEach((button) => {
+    button.addEventListener("click", () => updateApiPlaydate(button.dataset.apiPlaydateCheckin, "check-in"));
+  });
+  document.querySelectorAll("[data-api-resolve-report]").forEach((button) => {
+    button.addEventListener("click", () => resolveApiReport(button.dataset.apiResolveReport));
   });
   document.querySelectorAll("[data-swipe-like]").forEach((button) => {
     button.addEventListener("click", () => swipe(button.dataset.swipeLike, "like"));
