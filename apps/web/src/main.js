@@ -952,6 +952,8 @@ function recommendView() {
 function swipeCard(pet, primary, mode = "local") {
   const likeAttr = mode === "api" ? `data-api-swipe-like="${pet.id}"` : `data-swipe-like="${pet.id}"`;
   const passAttr = mode === "api" ? `data-api-swipe-pass="${pet.id}"` : `data-swipe-pass="${pet.id}"`;
+  const reportAttr = mode === "api" ? `data-api-report-pet="${pet.id}"` : `data-report-pet="${pet.id}"`;
+  const blockAttr = mode === "api" ? `data-api-block-user="${pet.ownerUserId}"` : `data-block-user="${pet.ownerUserId}"`;
   return `
     <article class="dog-card ${primary ? "primary-card" : ""}">
       <img src="${pet.avatar}" alt="${pet.name}" />
@@ -971,8 +973,8 @@ function swipeCard(pet, primary, mode = "local") {
         <div class="post-actions">
           <button ${passAttr}>Pass</button>
           <button class="primary" ${likeAttr}>Like</button>
-          <button data-api-report-pet="${pet.id}">Report</button>
-          <button data-api-block-user="${pet.ownerUserId}">Block</button>
+          <button ${reportAttr}>Report</button>
+          <button ${blockAttr}>Block</button>
         </div>
       </div>
     </article>
