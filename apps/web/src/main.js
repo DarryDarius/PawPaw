@@ -210,6 +210,13 @@ function setState(next) {
   render();
 }
 
+function tabFor(id) {
+  if (id === "onboarding") return "Setup";
+  if (id === "recommend") return "Discover";
+  if (id === "profile") return "Me";
+  return id.charAt(0).toUpperCase() + id.slice(1);
+}
+
 function showToast(message) {
   state.toast = message;
   render();
@@ -272,6 +279,9 @@ async function loadAccount() {
   setApiState({ status: "Loading profile...", error: "" });
   try {
     const me = await apiRequest("/me");
+    if (me.profileComplete && state.activeTab === "onboarding") {
+      state.activeTab = "recommend";
+    }
     setApiState({ me, status: "Profile loaded", error: "" });
     if (me.profileComplete) {
       await loadLocations();
@@ -836,7 +846,6 @@ function resetDemo() {
 
 function nav() {
   const tabs = [
-    ["onboarding", "Onboarding"],
     ["recommend", "Recommend"],
     ["matches", "Matches"],
     ["playdates", "Playdates"],
@@ -851,26 +860,64 @@ function nav() {
         <small>Dog playdate matching</small>
       </div>
       <div class="tabs">
-        ${tabs.map(([id, label]) => `<button class="${state.activeTab === id ? "active" : ""}" data-tab="${id}">${label}</button>`).join("")}
+        <button class="${state.activeTab === "onboarding" ? "active" : ""}" data-tab="onboarding">Setup</button>
+        ${tabs.map(([id]) => `<button class="${state.activeTab === id ? "active" : ""}" data-tab="${id}">${tabFor(id)}</button>`).join("")}
       </div>
     </nav>
   `;
 }
 
+function modeBanner() {
+  const me = state.api.me;
+  const live = Boolean(state.api.token && me?.profileComplete);
+  const steps = workflowSteps();
+  return `
+    <section class="mode-banner ${live ? "ready" : ""}">
+      <div>
+        <span class="mode-pill">${live ? "Live API mode" : "Demo mode"}</span>
+        <strong>${live ? `Ready to match in ${me.user.neighborhood || "your neighborhood"}` : "Create a profile to unlock live recommendations"}</strong>
+        <p>${live ? "Your saved dog profile can use live recommendation, match, chat, playdate, safety, and admin APIs." : "The static demo still works, but live data needs login, owner preferences, and one dog profile."}</p>
+      </div>
+      <div class="progress-rail">
+        ${steps.map((step) => `<span class="${step.active ? "active" : ""}">${step.label}</span>`).join("")}
+      </div>
+      <button class="${live ? "secondary" : "primary"}" data-tab="${live ? "recommend" : "onboarding"}">${live ? "View recommendations" : "Complete setup"}</button>
+    </section>
+  `;
+}
+
+function workflowSteps() {
+  const live = Boolean(state.api.token && state.api.me?.profileComplete);
+  const hasMatch = live ? state.api.matches.length > 0 : state.matches.length > 0;
+  const hasChat = live
+    ? Object.values(state.api.messages || {}).some((messages) => messages.length > 0)
+    : state.conversations.some((item) => item.messages.length > 1);
+  const hasPlaydate = live ? state.api.playdates.length > 0 : state.playdates.length > 0;
+  const hasFeedback = live ? (state.api.admin?.feedback || 0) > 0 : state.feedback.length > 0;
+  return [
+    { label: "Setup", active: live },
+    { label: "Discover", active: live },
+    { label: "Match", active: hasMatch },
+    { label: "Chat", active: hasChat },
+    { label: "Playdate", active: hasPlaydate },
+    { label: "Feedback", active: hasFeedback }
+  ];
+}
+
 function hero() {
   const pet = myPet();
+  const complete = Boolean(state.api.token && state.api.me?.profileComplete);
   return `
     <header class="hero">
       <div class="hero-copy">
         <p class="eyebrow">Local Dog Playdates</p>
-        <h1>Find compatible nearby dogs and plan safer meetups.</h1>
+        <h1>Find nearby dogs your dog may actually enjoy meeting.</h1>
         <p>
-          PawPaw matches owners by neighborhood, dog size, temperament, vaccine status,
-          activity style, and schedule. The MVP focuses on swipe matching, public-place
-          playdates, feedback, and safety controls.
+          PawPaw uses neighborhood, dog size, temperament, vaccine status,
+          activity style, and schedule to help owners plan safer first meetups.
         </p>
         <div class="hero-actions">
-          <button class="primary" data-scroll-target="recommend-feed">Start swiping</button>
+          <button class="primary" ${complete ? `data-scroll-target="recommend-feed"` : `data-tab="onboarding"`}>Start swiping</button>
           <button class="secondary" data-tab="playdates">Plan playdate</button>
         </div>
       </div>
@@ -886,6 +933,18 @@ function hero() {
 }
 
 function stats() {
+  if (state.api.token && state.api.me?.profileComplete) {
+    const dashboard = state.api.admin || {};
+    return `
+      <section class="stats">
+        <article><span>${state.api.recommendations.length}</span><p>Candidate dogs</p></article>
+        <article><span>${dashboard.likes || 0}</span><p>Right swipes</p></article>
+        <article><span>${state.api.matches.length}</span><p>Matches</p></article>
+        <article><span>${state.api.playdates.length}</span><p>Playdates</p></article>
+        <article><span>${dashboard.completedPlaydates || 0}</span><p>Completed</p></article>
+      </section>
+    `;
+  }
   const rightSwipes = state.swipes.filter((item) => item.action === "like").length;
   const completed = state.playdates.filter((item) => item.status === "completed").length;
   return `
@@ -910,7 +969,10 @@ function recommendView() {
   const cards = useApi ? apiCards : candidates;
   const first = cards[0];
   return `
-    ${hero()}
+    ${modeBanner()}
+    <section class="discover-shell">
+      ${hero()}
+    </section>
     ${stats()}
     <section class="section-heading" id="recommend-feed">
       <div>
@@ -927,15 +989,15 @@ function recommendView() {
         ? `<section class="swipe-layout">
             ${swipeCard(first, true, useApi ? "api" : "local")}
             <div class="panel">
-              <h3>Why this recommendation works</h3>
-              ${first.compatibility.reasons.map((reason) => `<div class="place-row"><strong>${reason}</strong><span>Used in weighted scoring</span></div>`).join("")}
+              <h3>Why PawPaw thinks this is a good first meetup</h3>
+              ${first.compatibility.reasons.map((reason) => `<div class="place-row"><strong>${reason}</strong><span>Recommendation signal</span></div>`).join("")}
               <div class="score-box">
                 <span>${first.compatibility.score}</span>
                 <p>Compatibility score</p>
               </div>
             </div>
           </section>`
-        : `<section class="panel empty-state"><h3>No more candidates</h3><p>Reset the demo or widen the area to get more nearby dogs.</p><button class="primary" id="reset-demo">Reset demo</button></section>`
+        : `<section class="panel empty-state"><h3>No more candidates</h3><p>${useApi ? "Refresh the live feed, widen distance, or add more seed profiles." : "Reset the demo or widen the area to get more nearby dogs."}</p><button class="primary" ${useApi ? `id="load-recommendations"` : `id="reset-demo"`}>${useApi ? "Refresh feed" : "Reset demo"}</button></section>`
     }
     <section class="section-heading">
       <div>
@@ -969,10 +1031,12 @@ function swipeCard(pet, primary, mode = "local") {
           <span>${vaccineLabel(pet.vaccineStatus)}</span>
         </div>
         <p>${pet.personalityTags.join(" · ")}</p>
-        <div class="compatibility-bar"><span style="width:${pet.compatibility.score}%"></span></div>
-        <div class="post-actions">
+        <div class="score-line"><strong>${pet.compatibility.score}</strong><div class="compatibility-bar"><span style="width:${pet.compatibility.score}%"></span></div></div>
+        <div class="post-actions primary-actions">
           <button ${passAttr}>Pass</button>
           <button class="primary" ${likeAttr}>Like</button>
+        </div>
+        <div class="post-actions safety-actions">
           <button ${reportAttr}>Report</button>
           <button ${blockAttr}>Block</button>
         </div>
@@ -1007,6 +1071,7 @@ function matchesView() {
 
 function apiMatchesView() {
   return `
+    ${modeBanner()}
     <section class="section-heading">
       <div>
         <p class="eyebrow">Matches</p>
@@ -1017,7 +1082,7 @@ function apiMatchesView() {
     <section class="two-column">
       <div class="panel">
         <h3>Active matches</h3>
-        ${state.api.matches.map(apiMatchRow).join("") || `<p class="empty-note">No live matches yet. Like a dog who has liked you back.</p>`}
+        ${state.api.matches.map(apiMatchRow).join("") || `<div class="empty-state compact"><h3>No matches yet</h3><p>Like compatible dogs in Discover to unlock chat.</p><button class="primary" data-tab="recommend">Go discover</button></div>`}
       </div>
       <div class="panel">
         <h3>Chat</h3>
@@ -1045,7 +1110,10 @@ function apiConversationView(match) {
   const messages = state.api.messages[match.conversationId] || [];
   return `
     <div class="chat-box">
-      <strong>${target.name}</strong>
+      <div class="chat-head">
+        <strong>${target.name}</strong>
+        <button class="secondary" data-tab="playdates">Plan playdate</button>
+      </div>
       <div class="messages">
         ${messages.map((message) => `<p><b>${message.senderUserId === state.api.me?.user?.id ? "You" : target.name}:</b> ${message.body}</p>`).join("") || `<p>No messages yet.</p>`}
       </div>
@@ -1094,6 +1162,7 @@ function playdatesView() {
     return apiPlaydatesView();
   }
   return `
+    ${modeBanner()}
     <section class="section-heading">
       <div>
         <p class="eyebrow">Playdates</p>
@@ -1155,7 +1224,12 @@ function apiPlaydatesView() {
   const matches = state.api.matches || [];
   const locations = state.api.locations || [];
   const playdates = state.api.playdates || [];
+  const pending = playdates.filter((item) => item.status === "pending");
+  const confirmed = playdates.filter((item) => item.status === "confirmed");
+  const history = playdates.filter((item) => ["completed", "cancelled"].includes(item.status));
+  const completed = playdates.filter((item) => item.status === "completed");
   return `
+    ${modeBanner()}
     <section class="section-heading">
       <div>
         <p class="eyebrow">Playdates</p>
@@ -1187,18 +1261,22 @@ function apiPlaydatesView() {
         <button class="primary" type="submit" ${matches.length && locations.length ? "" : "disabled"}>Send invite</button>
       </form>
       <div class="panel">
-        <h3>Playdate list</h3>
-        ${playdates.map(apiPlaydateRow).join("") || `<p class="empty-note">No live playdates yet.</p>`}
+        <h3>Pending</h3>
+        ${pending.map(apiPlaydateRow).join("") || `<p class="empty-note">No pending invites.</p>`}
+        <h3>Confirmed</h3>
+        ${confirmed.map(apiPlaydateRow).join("") || `<p class="empty-note">No confirmed playdates.</p>`}
+        <h3>History</h3>
+        ${history.map(apiPlaydateRow).join("") || `<p class="empty-note">No completed or cancelled playdates.</p>`}
       </div>
     </section>
-    <section class="panel feedback-panel">
+    <section class="panel feedback-panel ${completed.length ? "" : "hidden"}">
       <h3>Submit feedback</h3>
       <form class="inline-form feedback-form" id="api-feedback-form">
         <select name="playdateId">
-          ${playdates.map((item) => `<option value="${item.id}">${item.location.name} · ${item.status}</option>`).join("")}
+          ${completed.map((item) => `<option value="${item.id}">${item.location.name} · ${item.status}</option>`).join("")}
         </select>
         <select name="toUserId">
-          ${feedbackUsers(playdates).map((user) => `<option value="${user.id}">${user.label}</option>`).join("")}
+          ${feedbackUsers(completed).map((user) => `<option value="${user.id}">${user.label}</option>`).join("")}
         </select>
         <select name="rating">
           <option value="5">5 - Great</option>
@@ -1214,9 +1292,10 @@ function apiPlaydatesView() {
         </select>
         <label class="check-row"><input type="checkbox" name="safetyFlag" /> Safety concern</label>
         <input name="note" placeholder="Optional note" />
-        <button class="primary" type="submit" ${playdates.length ? "" : "disabled"}>Save feedback</button>
+        <button class="primary" type="submit" ${completed.length ? "" : "disabled"}>Save feedback</button>
       </form>
     </section>
+    ${completed.length ? "" : `<section class="panel empty-state compact"><h3>No completed playdates yet</h3><p>Feedback appears after both owners check in.</p></section>`}
   `;
 }
 
@@ -1226,7 +1305,7 @@ function apiPlaydateRow(playdate) {
     <div class="playdate-row">
       <div>
         <strong>${other?.pet?.name || "Matched dog"} at ${playdate.location.name}</strong>
-        <span>${playdate.startAt} · ${playdate.status} · ${playdate.vaccineRequired ? "vaccine required" : "vaccine optional"}</span>
+        <span>${playdate.startAt} · <b class="status-badge ${playdate.status}">${playdate.status}</b> · ${playdate.vaccineRequired ? "vaccine required" : "vaccine optional"}</span>
       </div>
       <div class="post-actions">
         <button data-api-playdate-respond="${playdate.id}:confirmed">Confirm</button>
@@ -1325,9 +1404,10 @@ function onboardingView() {
   const owner = me?.ownerProfile || {};
   const pets = me?.pets || [];
   return `
+    ${modeBanner()}
     <section class="section-heading">
       <div>
-        <p class="eyebrow">Onboarding</p>
+        <p class="eyebrow">Setup</p>
         <h2>Create the real matchable profile</h2>
       </div>
       <span class="privacy-pill">${me?.profileComplete ? "Ready for recommendations" : "Profile needs setup"}</span>
@@ -1469,8 +1549,8 @@ function adminView() {
   if (state.api.token && state.api.admin) {
     const dashboard = state.api.admin;
     const reports = dashboard.reports || [];
-    const statKeys = ["users", "pets", "recommendationLogs", "likes", "matches", "messages", "playdates", "completedPlaydates", "feedback", "reports", "blocks"];
     return `
+      ${modeBanner()}
       <section class="section-heading">
         <div>
           <p class="eyebrow">Admin</p>
@@ -1478,8 +1558,11 @@ function adminView() {
         </div>
         <button class="secondary" id="load-admin-dashboard">Refresh admin</button>
       </section>
-      <section class="stats">
-        ${statKeys.map((key) => `<article><span>${dashboard[key] || 0}</span><p>${key}</p></article>`).join("")}
+      <section class="admin-grid">
+        ${adminMetricGroup("Recommendation funnel", [["Impressions", dashboard.recommendationLogs], ["Likes", dashboard.likes], ["Passes", dashboard.passes], ["Matches", dashboard.matches]])}
+        ${adminMetricGroup("Playdate funnel", [["Created", dashboard.playdates], ["Completed", dashboard.completedPlaydates], ["Feedback", dashboard.feedback]])}
+        ${adminMetricGroup("Safety", [["Open reports", dashboard.reports], ["Blocks", dashboard.blocks]])}
+        ${adminMetricGroup("Inventory", [["Users", dashboard.users], ["Pets", dashboard.pets], ["Messages", dashboard.messages]])}
       </section>
       <section class="panel">
         <h3>Reports</h3>
@@ -1501,6 +1584,7 @@ function adminView() {
     reports: state.reports.filter((item) => item.status === "open").length
   };
   return `
+    ${modeBanner()}
     <section class="section-heading">
       <div>
         <p class="eyebrow">Admin</p>
@@ -1524,6 +1608,15 @@ function adminView() {
   `;
 }
 
+function adminMetricGroup(title, rows) {
+  return `
+    <article class="panel metric-group">
+      <h3>${title}</h3>
+      ${rows.map(([label, value]) => `<div class="metric-row"><span>${label}</span><strong>${value || 0}</strong></div>`).join("")}
+    </article>
+  `;
+}
+
 function activeView() {
   const views = {
     onboarding: onboardingView,
@@ -1538,6 +1631,10 @@ function activeView() {
 }
 
 function render() {
+  if (!state.api.token && state.activeTab !== "onboarding" && !window.localStorage.getItem("pawpaw-ui-seen-demo")) {
+    state.activeTab = "onboarding";
+    window.localStorage.setItem("pawpaw-ui-seen-demo", "1");
+  }
   document.querySelector("#app").innerHTML = `
     ${nav()}
     <main>${activeView()}</main>
